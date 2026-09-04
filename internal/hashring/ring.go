@@ -1,34 +1,44 @@
 package hashring
 
 import (
+	"fmt"
 	"hash/crc32"
 	"sort"
 )
 
 type Ring struct {
-	nodes  map[uint32]string
-	hashes []uint32
+	replicas int
+	nodes    map[uint32]string
+	hashes   []uint32
 }
 
-func New(nodes []string) *Ring {
+func New(nodes []string, replicas int) *Ring {
 	r := &Ring{
-		nodes: make(map[uint32]string),
+		replicas: replicas,
+		nodes:    make(map[uint32]string),
 	}
 
 	// 构造哈希环
 	for _, node := range nodes {
-		h := hash(node)
+		r.Add(node)
+	}
+
+	return r
+}
+
+func (r *Ring) Add(node string) {
+	for i := 0; i < r.replicas; i++ {
+		virtualNode := fmt.Sprintf("%s#%d", node, i)
+
+		h := hash(virtualNode)
 
 		r.nodes[h] = node
 		r.hashes = append(r.hashes, h)
 	}
 
-	// 按哈希值由小到大排序
 	sort.Slice(r.hashes, func(i, j int) bool {
 		return r.hashes[i] < r.hashes[j]
 	})
-
-	return r
 }
 
 func (r *Ring) Get(key string) string {
@@ -49,6 +59,28 @@ func (r *Ring) Get(key string) string {
 	}
 
 	return r.nodes[r.hashes[idx]]
+}
+
+func (r *Ring) Remove(node string) {
+	remove := make(map[uint32]struct{})
+
+	for i := range r.replicas {
+		virtualNode := fmt.Sprintf("%s#%d", node, i)
+
+		h := hash(virtualNode)
+		delete(r.nodes, h)
+		remove[h] = struct{}{}
+	}
+
+	// 删除 r.hashes 中已删除 node 的哈希值
+	// 复用原 slice 的低层数组, 筛选后重新写入源 slice
+	hashes := r.hashes[:0]
+	for _, h := range r.hashes {
+		if _, ok := remove[h]; !ok {
+			hashes = append(hashes, h)
+		}
+	}
+	r.hashes = hashes
 }
 
 func hash(s string) uint32 {

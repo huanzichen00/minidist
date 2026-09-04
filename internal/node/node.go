@@ -18,7 +18,7 @@ type Node struct {
 func New(addr string, nodes []string) *Node {
 	return &Node{
 		addr:  addr,
-		ring:  hashring.New(nodes),
+		ring:  hashring.New(nodes, 100),
 		store: store.NewMemory(),
 	}
 }
