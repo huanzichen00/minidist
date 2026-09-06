@@ -7,15 +7,17 @@ import (
 )
 
 type Ring struct {
-	replicas int
-	nodes    map[uint32]string
-	hashes   []uint32
+	virtualNodes int
+	nodes        map[uint32]string
+	hashes       []uint32
+	members      map[string]struct{}
 }
 
-func New(nodes []string, replicas int) *Ring {
+func New(nodes []string, virtualNodes int) *Ring {
 	r := &Ring{
-		replicas: replicas,
-		nodes:    make(map[uint32]string),
+		virtualNodes: virtualNodes,
+		nodes:        make(map[uint32]string),
+		members:      make(map[string]struct{}),
 	}
 
 	// 构造哈希环
@@ -27,7 +29,13 @@ func New(nodes []string, replicas int) *Ring {
 }
 
 func (r *Ring) Add(node string) {
-	for i := 0; i < r.replicas; i++ {
+	for i := 0; i < r.virtualNodes; i++ {
+		if _, ok := r.members[node]; ok {
+			return
+		}
+
+		r.members[node] = struct{}{}
+
 		virtualNode := fmt.Sprintf("%s#%d", node, i)
 
 		h := hash(virtualNode)
@@ -61,10 +69,56 @@ func (r *Ring) Get(key string) string {
 	return r.nodes[r.hashes[idx]]
 }
 
+func (r *Ring) GetN(key string, n int) []string {
+	if len(r.hashes) == 0 || n <= 0 {
+		return nil
+	}
+
+	if n > len(r.members) {
+		n = len(r.members)
+	}
+
+	h := hash(key)
+
+	idx := sort.Search(len(r.hashes), func(i int) bool {
+		return r.hashes[i] >= h
+	})
+
+	if idx == len(r.hashes) {
+		idx = 0
+	}
+
+	result := make([]string, 0, n)
+	seen := make(map[string]struct{})
+
+	// 沿哈希环顺时针查找，收集不同的真实节点
+	for len(result) < n && len(seen) < len(r.nodes) {
+		node := r.nodes[r.hashes[idx]]
+
+		// 同一个真实节点可能对应多个虚拟节点，避免重复加入
+		if _, ok := seen[node]; !ok {
+			seen[node] = struct{}{}
+			result = append(result, node)
+		}
+
+		idx++
+		if idx == len(r.hashes) {
+			idx = 0
+		}
+	}
+	return result
+}
+
 func (r *Ring) Remove(node string) {
+	if _, ok := r.members[node]; !ok {
+		return
+	}
+
+	delete(r.members, node)
+
 	remove := make(map[uint32]struct{})
 
-	for i := range r.replicas {
+	for i := range r.virtualNodes {
 		virtualNode := fmt.Sprintf("%s#%d", node, i)
 
 		h := hash(virtualNode)
