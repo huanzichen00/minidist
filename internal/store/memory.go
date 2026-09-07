@@ -2,9 +2,15 @@ package store
 
 import "sync"
 
+type Version struct {
+	Counter uint64 `json:"counter"`
+	NodeID  string `json:"node_id"`
+}
+
 type Value struct {
-	Data    []byte
-	Version uint64
+	Data    []byte  `json:"data"`
+	Version Version `json:"version"`
+	Deleted bool    `json:"deleted"`
 }
 
 type Memory struct {
@@ -22,6 +28,20 @@ func (m *Memory) Set(key string, value Value) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	current, ok := m.data[key]
+	if ok {
+		if CompareVersion(value.Version, current.Version) <= 0 {
+			return
+		}
+	}
+
+	m.data[key] = value
+}
+
+func (m *Memory) ForceSet(key string, value Value) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.data[key] = value
 }
 
@@ -31,4 +51,24 @@ func (m *Memory) Get(key string) (Value, bool) {
 
 	value, ok := m.data[key]
 	return value, ok
+}
+
+func CompareVersion(a, b Version) int {
+	if a.Counter < b.Counter {
+		return -1
+	}
+
+	if a.Counter > b.Counter {
+		return 1
+	}
+
+	if a.NodeID < b.NodeID {
+		return -1
+	}
+
+	if a.NodeID > b.NodeID {
+		return 1
+	}
+
+	return 0
 }
