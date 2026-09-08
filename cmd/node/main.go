@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"minidist/internal/node"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -27,9 +32,31 @@ func main() {
 
 	n := node.New(*addr, nodes)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	n.RunBackground(ctx)
+
 	log.Printf("node listening on %s", *addr)
 
-	if err := http.ListenAndServe(*addr, n.Handler()); err != nil {
+	server := &http.Server{
+		Addr:    *addr,
+		Handler: n.Handler(),
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cancel()
+
+		_ = server.Shutdown(shutdownCtx)
+	}()
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }

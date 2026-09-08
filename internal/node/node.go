@@ -31,6 +31,8 @@ type Node struct {
 	readQuorum int
 
 	version atomic.Uint64
+
+	hints *hintStore
 }
 
 // goroutine 给 Coordinator 汇报结果 channel 数据结构
@@ -72,6 +74,8 @@ func New(addr string, nodes []string) *Node {
 		replicas:    3,
 		writeQuorum: 2,
 		readQuorum:  2,
+
+		hints: newHintStore(),
 	}
 }
 
@@ -81,6 +85,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/kv/", n.handleKV)
 	mux.HandleFunc("/internal/kv/", n.handleInternalKV)
 	mux.HandleFunc("/internal/debug/kv/", n.handleDebugKV)
+	mux.HandleFunc("/internal/debug/hints", n.handleDebugHints)
 
 	return mux
 }
@@ -212,10 +217,14 @@ func (n *Node) handleReplicatedGet(w http.ResponseWriter, r *http.Request, key s
 	}
 
 	for _, result := range successful {
-		if !newer(latest, result.value) {
+		if !result.found {
+			n.repairReplica(r.Context(), result.replica, key, latest)
 			continue
 		}
-		n.repairReplica(r.Context(), result.replica, key, latest)
+
+		if newer(latest, result.value) {
+			n.repairReplica(r.Context(), result.replica, key, latest)
+		}
 	}
 
 	if latest.Deleted {
@@ -224,6 +233,35 @@ func (n *Node) handleReplicatedGet(w http.ResponseWriter, r *http.Request, key s
 	}
 
 	_, _ = w.Write(latest.Data)
+}
+
+func (n *Node) replicateValue(ctx context.Context, key string, value store.Value) bool {
+	replicas := n.replicasFor(key)
+
+	results := make(chan writeResult, len(replicas))
+	for _, replica := range replicas {
+		go func(replica string) {
+			err := n.putReplica(ctx, replica, key, value)
+			results <- writeResult{
+				replica: replica,
+				err:     err,
+			}
+		}(replica)
+	}
+
+	success := 0
+
+	for range replicas {
+		result := <-results
+
+		if result.err != nil {
+			n.hints.Add(result.replica, key, value)
+			continue
+		}
+		success++
+	}
+
+	return success >= n.writeQuorum
 }
 
 func (n *Node) handleReplicatedPut(w http.ResponseWriter, r *http.Request, key string) {
@@ -242,47 +280,12 @@ func (n *Node) handleReplicatedPut(w http.ResponseWriter, r *http.Request, key s
 
 	value := store.Value{Data: data, Version: version}
 
-	replicas := n.replicasFor(key)
-
-	if len(replicas) == 0 {
-		http.Error(w, "no replicas", http.StatusServiceUnavailable)
+	if !n.replicateValue(r.Context(), key, value) {
+		http.Error(w, "write quorum not reached", http.StatusServiceUnavailable)
 		return
 	}
 
-	if len(replicas) < n.writeQuorum {
-		http.Error(w, "not enough replicas", http.StatusServiceUnavailable)
-		return
-	}
-
-	results := make(chan writeResult, len(replicas))
-	for _, replica := range replicas {
-		go func(replica string) {
-			err := n.putReplica(r.Context(), replica, key, value)
-			results <- writeResult{
-				replica: replica,
-				err:     err,
-			}
-		}(replica)
-	}
-
-	success := 0
-
-	for range replicas {
-		result := <-results
-
-		if result.err != nil {
-			log.Printf("write replica %s failed: %v", result.replica, result.err)
-			continue
-		}
-		success++
-
-		if success >= n.writeQuorum {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
-
-	http.Error(w, "write quorum not reached", http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (n *Node) handleReplicatedDelete(w http.ResponseWriter, r *http.Request, key string) {
@@ -297,41 +300,12 @@ func (n *Node) handleReplicatedDelete(w http.ResponseWriter, r *http.Request, ke
 		Deleted: true,
 	}
 
-	replicas := n.ring.GetN(key, n.replicas)
-	if len(replicas) < n.writeQuorum {
-		http.Error(w, "not enough replicas", http.StatusServiceUnavailable)
+	if !n.replicateValue(r.Context(), key, value) {
+		http.Error(w, "delete quorum not reached", http.StatusServiceUnavailable)
 		return
 	}
 
-	results := make(chan writeResult, len(replicas))
-
-	for _, replica := range replicas {
-		go func(replica string) {
-			err := n.putReplica(r.Context(), replica, key, value)
-			results <- writeResult{
-				replica: replica,
-				err:     err,
-			}
-		}(replica)
-	}
-
-	success := 0
-
-	for range replicas {
-		result := <-results
-
-		if result.err != nil {
-			continue
-		}
-
-		success++
-		if success >= n.writeQuorum {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-	}
-
-	http.Error(w, "delete quorum not reached", http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (n *Node) handleDebugKV(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +352,20 @@ func (n *Node) handleDebugPut(w http.ResponseWriter, r *http.Request, key string
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (n *Node) handleDebugHints(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	hints := n.hints.List()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(hints); err != nil {
+		http.Error(w, "encode hints failed", http.StatusInternalServerError)
+		return
+	}
+}
+
 func (n *Node) putReplica(ctx context.Context, replica string, key string, value store.Value) error {
 	if replica == n.addr {
 		n.store.Set(key, value)
@@ -413,27 +401,6 @@ func (n *Node) repairReplica(ctx context.Context, replica string, key string, va
 	if err != nil {
 		log.Printf("repair replica %s failed: %v", replica, err)
 	}
-}
-
-func (n *Node) forward(owner string, w http.ResponseWriter, r *http.Request) {
-	url := fmt.Sprintf("http://%s%s", owner, r.URL.Path)
-
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)
-
-	if err != nil {
-		http.Error(w, "create request failed", http.StatusInternalServerError)
-	}
-
-	resp, err := n.client.Do(req)
-	if err != nil {
-		http.Error(w, "forward request failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	w.WriteHeader(resp.StatusCode)
-
-	_, _ = io.Copy(w, resp.Body)
 }
 
 func (n *Node) getReplica(ctx context.Context, replica string, key string) (store.Value, bool, error) {
@@ -480,7 +447,7 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 	replicas := n.replicasFor(key)
 
 	if len(replicas) < n.readQuorum {
-		// 版本读取也必须满足 quorum。
+		// 版本读取也必须满足 quorum
 		return store.Version{}, fmt.Errorf(
 			"not enough replicas: got %d, need %d",
 			len(replicas),
@@ -490,7 +457,7 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 
 	results := make(chan versionResult, len(replicas))
 
-	// 并发读取副本，找出已存在的最大版本号。
+	// 并发读取副本，找出已存在的最大版本号
 	for _, replica := range replicas {
 		go func(replica string) {
 			value, found, err := n.getReplica(ctx, replica, key)
@@ -522,7 +489,7 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 			continue
 		}
 
-		// 没有 key 也是成功响应，只是不参与最大版本比较。
+		// 没有 key 也是成功响应，只是不参与最大版本比较
 		success++
 
 		if result.found && result.counter > maxCounter {
@@ -538,8 +505,9 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 		)
 	}
 
-	// 同时考虑本节点已分配的版本，避免版本倒退。
+	// 同时考虑本节点已分配的版本，避免版本倒退
 	for {
+		// 取出 atomic.Uint64
 		current := n.version.Load()
 
 		base := maxCounter
@@ -549,7 +517,7 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 
 		next := base + 1
 
-		// CAS 保证并发请求不会分配到相同的本地版本号。
+		// CAS 保证并发请求不会分配到相同的本地版本号
 		if n.version.CompareAndSwap(current, next) {
 			return store.Version{
 				Counter: next,
@@ -557,4 +525,23 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 			}, nil
 		}
 	}
+}
+
+func (n *Node) runHintLoop(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			n.flushHints(ctx)
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (n *Node) RunBackground(ctx context.Context) {
+	go n.runHintLoop(ctx)
 }

@@ -29,13 +29,13 @@ func New(nodes []string, virtualNodes int) *Ring {
 }
 
 func (r *Ring) Add(node string) {
+
+	if _, ok := r.members[node]; ok {
+		return
+	}
+	r.members[node] = struct{}{}
+
 	for i := 0; i < r.virtualNodes; i++ {
-		if _, ok := r.members[node]; ok {
-			return
-		}
-
-		r.members[node] = struct{}{}
-
 		virtualNode := fmt.Sprintf("%s#%d", node, i)
 
 		h := hash(virtualNode)
