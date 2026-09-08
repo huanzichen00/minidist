@@ -33,6 +33,8 @@ type Node struct {
 	version atomic.Uint64
 
 	hints *hintStore
+
+	fd *failureDetector
 }
 
 // goroutine 给 Coordinator 汇报结果 channel 数据结构
@@ -52,6 +54,11 @@ type versionResult struct {
 	counter uint64
 	found   bool
 	err     error
+}
+
+type pingResult struct {
+	node string
+	err  error
 }
 
 func newer(a, b store.Value) bool {
@@ -76,6 +83,7 @@ func New(addr string, nodes []string) *Node {
 		readQuorum:  2,
 
 		hints: newHintStore(),
+		fd:    newFailureDetector(nodes),
 	}
 }
 
@@ -86,6 +94,8 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/kv/", n.handleInternalKV)
 	mux.HandleFunc("/internal/debug/kv/", n.handleDebugKV)
 	mux.HandleFunc("/internal/debug/hints", n.handleDebugHints)
+	mux.HandleFunc("/internal/ping", n.handlePing)
+	mux.HandleFunc("/internal/debug/members", n.handleDebugMembers)
 
 	return mux
 }
@@ -366,6 +376,53 @@ func (n *Node) handleDebugHints(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (n *Node) handleDebugMembers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(n.fd.Snapshot()); err != nil {
+		http.Error(w, "encode members failed", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (n *Node) handlePing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) pingNode(ctx context.Context, addr string) error {
+	if addr == n.addr {
+		return nil
+	}
+
+	url := "http://" + addr + "/internal/ping"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("node %s returned %s", addr, resp.Status)
+	}
+
+	return nil
+}
+
 func (n *Node) putReplica(ctx context.Context, replica string, key string, value store.Value) error {
 	if replica == n.addr {
 		n.store.Set(key, value)
@@ -542,6 +599,55 @@ func (n *Node) runHintLoop(ctx context.Context) {
 	}
 }
 
+func (n *Node) runFailureDetector(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			n.checkMembers(ctx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (n *Node) checkMembers(ctx context.Context) {
+	members := n.fd.List()
+
+	results := make(chan pingResult, len(members))
+
+	count := 0
+
+	for _, member := range members {
+		if member == n.addr {
+			continue
+		}
+
+		count++
+
+		go func(member string) {
+			results <- pingResult{
+				node: member,
+				err:  n.pingNode(ctx, member),
+			}
+		}(member)
+	}
+
+	for range count {
+		result := <-results
+
+		if result.err != nil {
+			n.fd.MarkFailure(result.node)
+			continue
+		}
+
+		n.fd.MarkSuccess(result.node)
+	}
+}
+
 func (n *Node) RunBackground(ctx context.Context) {
 	go n.runHintLoop(ctx)
+	go n.runFailureDetector(ctx)
 }

@@ -32,9 +32,8 @@ func main() {
 
 	n := node.New(*addr, nodes)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	n.RunBackground(ctx)
 
 	log.Printf("node listening on %s", *addr)
@@ -44,19 +43,28 @@ func main() {
 		Handler: n.Handler(),
 	}
 
+	serverErr := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
+		serverErr <- server.ListenAndServe()
+	}()
 
-		shutdownCtx, cancel := context.WithTimeout(
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	select {
+	case <-signals:
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(),
 			5*time.Second,
 		)
-		defer cancel()
-
+		defer shutdownCancel()
 		_ = server.Shutdown(shutdownCtx)
-	}()
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+	case err := <-serverErr:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
 	}
 }
