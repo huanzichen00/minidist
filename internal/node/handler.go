@@ -20,6 +20,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/ping-request", n.handlePingRequest)
 	mux.HandleFunc("/internal/members/sync", n.handleMembershipSync)
 	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
+	mux.HandleFunc("/admin/members", n.handleAdminAddMember)
 
 	return mux
 }
@@ -168,6 +169,31 @@ func (n *Node) handleRebalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	n.rebalance(r.Context())
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) handleAdminAddMember(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req addMemberAdminRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Member == "" {
+		http.Error(w, "member is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := n.AddMember(r.Context(), req.Member); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

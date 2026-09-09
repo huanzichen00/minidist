@@ -12,6 +12,10 @@ type membershipUpdateRequest struct {
 	Members []string `json:"members"`
 }
 
+type addMemberAdminRequest struct {
+	Member string `json:"member"`
+}
+
 func (n *Node) AddMember(ctx context.Context, member string) error {
 	current := n.ring.Members()
 
