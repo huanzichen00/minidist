@@ -61,6 +61,12 @@ type pingResult struct {
 	err  error
 }
 
+type backgroundTask struct {
+	name     string
+	interval time.Duration
+	run      func(context.Context)
+}
+
 func newer(a, b store.Value) bool {
 	return store.CompareVersion(
 		a.Version,
@@ -96,6 +102,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/debug/hints", n.handleDebugHints)
 	mux.HandleFunc("/internal/ping", n.handlePing)
 	mux.HandleFunc("/internal/debug/members", n.handleDebugMembers)
+	mux.HandleFunc("/internal/gossip", n.handleGossip)
 
 	return mux
 }
@@ -398,6 +405,23 @@ func (n *Node) handlePing(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (n *Node) handleGossip(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req gossipRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid gossip request", http.StatusBadRequest)
+		return
+	}
+
+	n.fd.Merge(req.Members)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (n *Node) pingNode(ctx context.Context, addr string) error {
 	if addr == n.addr {
 		return nil
@@ -584,31 +608,58 @@ func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, erro
 	}
 }
 
-func (n *Node) runHintLoop(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+func (n *Node) sendGossip(ctx context.Context, target string) error {
+	members := n.fd.GossipSnapshot()
 
-	for {
-		select {
-		case <-ticker.C:
-			n.flushHints(ctx)
+	payload, err := json.Marshal(gossipRequest{
+		Members: members,
+	})
 
-		case <-ctx.Done():
-			return
-		}
+	if err != nil {
+		return err
 	}
+
+	url := "http://" + target + "/internal/gossip"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("gossip target %s returned %s", target, resp.Status)
+	}
+
+	return nil
 }
 
-func (n *Node) runFailureDetector(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+func (n *Node) gossipTargets() []string {
+	members := n.fd.List()
 
-	for {
-		select {
-		case <-ticker.C:
-			n.checkMembers(ctx)
-		case <-ctx.Done():
-			return
+	targets := make([]string, 0, len(members))
+	for _, member := range members {
+		if member == n.addr {
+			continue
+		}
+
+		targets = append(targets, member)
+	}
+
+	return targets
+}
+
+func (n *Node) gossipOnce(ctx context.Context) {
+	for _, target := range n.gossipTargets() {
+		if err := n.sendGossip(ctx, target); err != nil {
+			continue
 		}
 	}
 }
@@ -647,7 +698,57 @@ func (n *Node) checkMembers(ctx context.Context) {
 	}
 }
 
+func (n *Node) runPeriodicTask(
+	ctx context.Context,
+	name string,
+	interval time.Duration,
+	task func(context.Context),
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("background task %s panic: %v", name, r)
+					}
+				}()
+				task(ctx)
+			}()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (n *Node) RunBackground(ctx context.Context) {
-	go n.runHintLoop(ctx)
-	go n.runFailureDetector(ctx)
+	tasks := []backgroundTask{
+		{
+			name:     "hint handoff",
+			interval: 2 * time.Second,
+			run:      n.flushHints,
+		},
+		{
+			name:     "failure detector",
+			interval: 1 * time.Second,
+			run:      n.checkMembers,
+		},
+		{
+			name:     "gossip",
+			interval: 2 * time.Second,
+			run:      n.gossipOnce,
+		},
+	}
+
+	for _, task := range tasks {
+		go n.runPeriodicTask(
+			ctx,
+			task.name,
+			task.interval,
+			task.run,
+		)
+	}
 }

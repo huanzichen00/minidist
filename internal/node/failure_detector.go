@@ -170,3 +170,28 @@ func (f *failureDetector) GossipSnapshot() []gossipMember {
 
 	return result
 }
+
+func (f *failureDetector) Merge(members []gossipMember) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for _, remote := range members {
+		local, ok := f.members[remote.Node]
+		if !ok {
+			f.members[remote.Node] = memberState{
+				Status:  parseNodeStatus(remote.Status),
+				Version: remote.Version,
+			}
+			continue
+		}
+
+		if remote.Version <= local.Version {
+			continue
+		}
+
+		local.Status = parseNodeStatus(remote.Status)
+		local.Version = remote.Version
+
+		f.members[remote.Node] = local
+	}
+}
