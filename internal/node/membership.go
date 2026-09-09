@@ -23,32 +23,10 @@ type memberState struct {
 	Version     uint64
 }
 
-type memberDebugState struct {
-	Node         string    `json:"node"`
-	Status       string    `json:"status"`
-	LastSuccess  time.Time `json:"last_success"`
-	LastFailure  time.Time `json:"last_failure"`
-	FailureCount int       `json:"failure_count"`
-
-	Incarnation uint64 `json:"incarnation"`
-	Version     uint64 `json:"version"`
-}
-
 type failureDetector struct {
 	mu      sync.RWMutex
 	self    string
 	members map[string]memberState
-}
-
-type gossipMember struct {
-	Node        string `json:"node"`
-	Status      string `json:"status"`
-	Version     uint64 `json:"version"`
-	Incarnation uint64 `json:"incarnation"`
-}
-
-type gossipRequest struct {
-	Members []gossipMember `json:"members"`
 }
 
 func newFailureDetector(nodes []string, self string) *failureDetector {
