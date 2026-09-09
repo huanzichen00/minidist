@@ -13,7 +13,7 @@ type membershipUpdateRequest struct {
 }
 
 func (n *Node) AddMember(ctx context.Context, member string) error {
-	current := n.fd.List()
+	current := n.ring.Members()
 
 	allMembers := make([]string, 0, len(current)+1)
 	allMembers = append(allMembers, current...)

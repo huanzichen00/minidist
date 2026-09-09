@@ -1,11 +1,6 @@
 package node
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
 	"sync"
 	"time"
 )
@@ -32,10 +27,6 @@ type failureDetector struct {
 	mu      sync.RWMutex
 	self    string
 	members map[string]memberState
-}
-
-type addMemberRequest struct {
-	Node string `json:"node"`
 }
 
 func newFailureDetector(nodes []string, self string) *failureDetector {
@@ -251,34 +242,4 @@ func (f *failureDetector) TrackMember(node string) {
 		Status:      statusAlive,
 		LastSuccess: time.Now(),
 	}
-}
-
-func (n *Node) sendAddMember(ctx context.Context, target string, member string) error {
-	payload, err := json.Marshal(addMemberRequest{
-		Node: member,
-	})
-	if err != nil {
-		return err
-	}
-
-	url := "http://" + target + "/internal/members/add"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := n.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("add member on %s failed: %s", target, resp.Status)
-	}
-
-	return nil
 }

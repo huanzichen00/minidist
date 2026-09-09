@@ -81,6 +81,19 @@ func (r *Ring) Get(key string) (string, bool) {
 	return r.get(key)
 }
 
+func (r *Ring) Members() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	members := make([]string, 0, len(r.members))
+	for member := range r.members {
+		members = append(members, member)
+	}
+
+	sort.Strings(members)
+	return members
+}
+
 func (r *Ring) GetN(key string, n int) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
