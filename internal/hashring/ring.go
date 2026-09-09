@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"hash/crc32"
 	"sort"
+	"sync"
 )
 
 type Ring struct {
+	mu sync.RWMutex
+
 	virtualNodes int
 	nodes        map[uint32]string
 	hashes       []uint32
@@ -29,6 +32,8 @@ func New(nodes []string, virtualNodes int) *Ring {
 }
 
 func (r *Ring) Add(node string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	if _, ok := r.members[node]; ok {
 		return
@@ -49,9 +54,9 @@ func (r *Ring) Add(node string) {
 	})
 }
 
-func (r *Ring) Get(key string) string {
+func (r *Ring) get(key string) (string, bool) {
 	if len(r.hashes) == 0 {
-		return ""
+		return "", false
 	}
 
 	h := hash(key)
@@ -66,10 +71,20 @@ func (r *Ring) Get(key string) string {
 		idx = 0
 	}
 
-	return r.nodes[r.hashes[idx]]
+	return r.nodes[r.hashes[idx]], true
+}
+
+func (r *Ring) Get(key string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.get(key)
 }
 
 func (r *Ring) GetN(key string, n int) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if len(r.hashes) == 0 || n <= 0 {
 		return nil
 	}
@@ -110,6 +125,9 @@ func (r *Ring) GetN(key string, n int) []string {
 }
 
 func (r *Ring) Remove(node string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if _, ok := r.members[node]; !ok {
 		return
 	}
