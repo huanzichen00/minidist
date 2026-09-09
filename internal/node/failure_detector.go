@@ -18,7 +18,9 @@ type memberState struct {
 	LastSuccess  time.Time
 	LastFailure  time.Time
 	FailureCount int
-	Version      uint64
+
+	Incarnation uint64
+	Version     uint64
 }
 
 type memberDebugState struct {
@@ -27,25 +29,31 @@ type memberDebugState struct {
 	LastSuccess  time.Time `json:"last_success"`
 	LastFailure  time.Time `json:"last_failure"`
 	FailureCount int       `json:"failure_count"`
+
+	Incarnation uint64 `json:"incarnation"`
+	Version     uint64 `json:"version"`
 }
 
 type failureDetector struct {
 	mu      sync.RWMutex
+	self    string
 	members map[string]memberState
 }
 
 type gossipMember struct {
-	Node    string `json:"node"`
-	Status  string `json:"status"`
-	Version uint64 `json:"version"`
+	Node        string `json:"node"`
+	Status      string `json:"status"`
+	Version     uint64 `json:"version"`
+	Incarnation uint64 `json:"incarnation"`
 }
 
 type gossipRequest struct {
 	Members []gossipMember `json:"members"`
 }
 
-func newFailureDetector(nodes []string) *failureDetector {
+func newFailureDetector(nodes []string, self string) *failureDetector {
 	fd := &failureDetector{
+		self:    self,
 		members: make(map[string]memberState, len(nodes)),
 	}
 	now := time.Now()
@@ -55,6 +63,12 @@ func newFailureDetector(nodes []string) *failureDetector {
 			LastSuccess: now,
 		}
 	}
+
+	selfState := fd.members[self]
+	selfState.Incarnation = uint64(time.Now().UnixNano())
+	selfState.Version = 1
+
+	fd.members[self] = selfState
 
 	return fd
 }
@@ -148,6 +162,8 @@ func (f *failureDetector) Snapshot() []memberDebugState {
 				LastSuccess:  state.LastSuccess,
 				LastFailure:  state.LastFailure,
 				FailureCount: state.FailureCount,
+				Incarnation:  state.Incarnation,
+				Version:      state.Version,
 			},
 		)
 	}
@@ -162,9 +178,10 @@ func (f *failureDetector) GossipSnapshot() []gossipMember {
 	result := make([]gossipMember, 0, len(f.members))
 	for node, state := range f.members {
 		result = append(result, gossipMember{
-			Node:    node,
-			Status:  state.Status.String(),
-			Version: state.Version,
+			Node:        node,
+			Status:      state.Status.String(),
+			Incarnation: state.Incarnation,
+			Version:     state.Version,
 		})
 	}
 
@@ -176,22 +193,61 @@ func (f *failureDetector) Merge(members []gossipMember) {
 	defer f.mu.Unlock()
 
 	for _, remote := range members {
+		if remote.Node == f.self {
+			local := f.members[f.self]
+			if parseNodeStatus(remote.Status) != statusAlive &&
+				newerMemberState(remote, local) {
+				f.refuteSelf(remote)
+			}
+
+			continue
+		}
+
 		local, ok := f.members[remote.Node]
 		if !ok {
 			f.members[remote.Node] = memberState{
-				Status:  parseNodeStatus(remote.Status),
-				Version: remote.Version,
+				Status:      parseNodeStatus(remote.Status),
+				Incarnation: remote.Incarnation,
+				Version:     remote.Version,
 			}
 			continue
 		}
 
-		if remote.Version <= local.Version {
+		if !newerMemberState(remote, local) {
 			continue
 		}
 
 		local.Status = parseNodeStatus(remote.Status)
+		local.Incarnation = remote.Incarnation
 		local.Version = remote.Version
 
 		f.members[remote.Node] = local
 	}
+}
+
+func newerMemberState(remote gossipMember, local memberState) bool {
+	if remote.Incarnation > local.Incarnation {
+		return true
+	}
+
+	if remote.Incarnation < local.Incarnation {
+		return false
+	}
+
+	return remote.Version > local.Version
+}
+
+func (f *failureDetector) refuteSelf(remote gossipMember) {
+	local := f.members[f.self]
+	if remote.Incarnation < local.Incarnation {
+		return
+	}
+
+	local.Incarnation = remote.Incarnation + 1
+	local.Version = 1
+	local.Status = statusAlive
+	local.FailureCount = 0
+	local.LastSuccess = time.Now()
+
+	f.members[f.self] = local
 }

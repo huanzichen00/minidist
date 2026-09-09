@@ -89,7 +89,7 @@ func New(addr string, nodes []string) *Node {
 		readQuorum:  2,
 
 		hints: newHintStore(),
-		fd:    newFailureDetector(nodes),
+		fd:    newFailureDetector(nodes, addr),
 	}
 }
 
