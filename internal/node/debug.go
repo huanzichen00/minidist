@@ -19,6 +19,11 @@ type memberDebugState struct {
 	Version     uint64 `json:"version"`
 }
 
+type membersDebugResponse struct {
+	ClusterMembers []string           `json:"cluster_members"`
+	Health         []memberDebugState `json:"health"`
+}
+
 func (n *Node) handleDebugKV(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/internal/debug/kv/")
 	if key == "" {
@@ -83,8 +88,13 @@ func (n *Node) handleDebugMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := membersDebugResponse{
+		ClusterMembers: n.ring.Members(),
+		Health:         n.fd.Snapshot(),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(n.fd.Snapshot()); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, "encode members failed", http.StatusInternalServerError)
 		return
 	}
