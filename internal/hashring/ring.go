@@ -152,6 +152,7 @@ func (r *Ring) Remove(node string) {
 			hashes = append(hashes, h)
 		}
 	}
+
 	r.hashes = hashes
 }
 

@@ -18,6 +18,9 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/debug/members", n.handleDebugMembers)
 	mux.HandleFunc("/internal/gossip", n.handleGossip)
 	mux.HandleFunc("/internal/ping-request", n.handlePingRequest)
+	mux.HandleFunc("/internal/members/add", n.handleAddMember)
+	mux.HandleFunc("/internal/members/sync", n.handleMembershipSync)
+	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
 
 	return mux
 }
@@ -135,6 +138,60 @@ func (n *Node) handleGossip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	n.fd.Merge(req.Members)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) handleAddMember(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req addMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Node == "" {
+		http.Error(w, "empty node", http.StatusBadRequest)
+		return
+	}
+
+	n.ring.Add(req.Node)
+	n.fd.TrackMember(req.Node)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) handleMembershipSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req membershipUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	for _, member := range req.Members {
+		n.ring.Add(member)
+		n.fd.TrackMember(member)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) handleRebalance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	n.rebalance(r.Context())
 
 	w.WriteHeader(http.StatusNoContent)
 }

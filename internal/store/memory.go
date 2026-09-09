@@ -1,6 +1,9 @@
 package store
 
-import "sync"
+import (
+	"maps"
+	"sync"
+)
 
 type Version struct {
 	Counter uint64 `json:"counter"`
@@ -71,4 +74,15 @@ func CompareVersion(a, b Version) int {
 	}
 
 	return 0
+}
+
+func (m *Memory) Snapshot() map[string]Value {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]Value, len(m.data))
+
+	maps.Copy(result, m.data)
+
+	return result
 }
