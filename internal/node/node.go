@@ -14,6 +14,8 @@ type Node struct {
 	ring  *hashring.Ring
 	store *store.Memory
 
+	virtualNodes int
+
 	client *http.Client
 
 	// N
@@ -32,9 +34,10 @@ type Node struct {
 
 func New(addr string, nodes []string) *Node {
 	return &Node{
-		addr:  addr,
-		ring:  hashring.New(nodes, 100),
-		store: store.NewMemory(),
+		addr:         addr,
+		ring:         hashring.New(nodes, 100),
+		store:        store.NewMemory(),
+		virtualNodes: 100,
 
 		client: &http.Client{
 			Timeout: 2 * time.Second,

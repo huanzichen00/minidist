@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"minidist/internal/store"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -21,6 +22,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/members/sync", n.handleMembershipSync)
 	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
 	mux.HandleFunc("/admin/members", n.handleAdminAddMember)
+	mux.HandleFunc("/internal/drain", n.handleDrain)
 
 	return mux
 }
@@ -154,6 +156,14 @@ func (n *Node) handleMembershipSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	current := n.ring.Members()
+
+	for _, member := range current {
+		if !slices.Contains(req.Members, member) {
+			n.ring.Remove(member)
+		}
+	}
+
 	for _, member := range req.Members {
 		n.ring.Add(member)
 		n.fd.TrackMember(member)
@@ -195,6 +205,31 @@ func (n *Node) handleAdminAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := n.AddMember(r.Context(), req.Member); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) handleDrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req drainRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid drain request", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.FutureMembers) == 0 {
+		http.Error(w, "future members cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	if err := n.drain(r.Context(), req.FutureMembers); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}

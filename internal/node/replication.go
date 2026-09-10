@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"minidist/internal/hashring"
 	"minidist/internal/store"
 	"net/http"
 )
@@ -258,5 +259,9 @@ func (n *Node) getReplica(ctx context.Context, replica string, key string) (stor
 }
 
 func (n *Node) replicasFor(key string) []string {
-	return n.ring.GetN(key, n.replicas)
+	return n.replicasForRing(n.ring, key)
+}
+
+func (n *Node) replicasForRing(ring *hashring.Ring, key string) []string {
+	return ring.GetN(key, n.replicas)
 }

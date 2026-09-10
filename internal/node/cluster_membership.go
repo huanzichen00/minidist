@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 )
 
 type membershipUpdateRequest struct {
@@ -13,6 +14,10 @@ type membershipUpdateRequest struct {
 }
 
 type addMemberAdminRequest struct {
+	Member string `json:"member"`
+}
+
+type removeMemberAdminRequest struct {
 	Member string `json:"member"`
 }
 
@@ -67,4 +72,54 @@ func (n *Node) sendMembershipSync(ctx context.Context, target string, members []
 	}
 
 	return nil
+}
+
+func (n *Node) RemoveMember(ctx context.Context, member string) error {
+	current := n.ring.Members()
+
+	if !slices.Contains(current, member) {
+		return fmt.Errorf("member %s not found", member)
+	}
+
+	if len(current) <= 1 {
+		return fmt.Errorf("cannot remove the last member")
+	}
+
+	futureMembers := removeMember(current, member)
+
+	// Phase 1:
+	// 让即将退出的节点先把数据迁移到 future ring
+	if err := n.sendDrain(ctx, member, futureMembers); err != nil {
+		return err
+	}
+
+	// Phase 2:
+	// drain 成功后，才正式更新剩余节点的 membership
+	for _, target := range futureMembers {
+		if err := n.sendMembershipSync(ctx, target, futureMembers); err != nil {
+			return err
+		}
+	}
+
+	// Phase 3:
+	// 让剩余节点按新的 ring 再做一次 rebalance / cleanup
+	for _, target := range futureMembers {
+		if _, err := n.sendRebalance(ctx, target); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func removeMember(members []string, member string) []string {
+	result := make([]string, 0, len(members)-1)
+
+	for _, current := range members {
+		if current != member {
+			result = append(result, current)
+		}
+	}
+
+	return result
 }
