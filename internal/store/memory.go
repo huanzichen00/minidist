@@ -86,3 +86,20 @@ func (m *Memory) Snapshot() map[string]Value {
 
 	return result
 }
+
+func (m *Memory) DeleteIfMatch(key string, version Version) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, ok := m.data[key]
+	if !ok {
+		return false
+	}
+
+	if CompareVersion(current.Version, version) != 0 {
+		return false
+	}
+
+	delete(m.data, key)
+	return true
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 )
 
 type rebalanceResult struct {
@@ -12,6 +13,7 @@ type rebalanceResult struct {
 	Copied  int `json:"copied"`
 	Failed  int `json:"failed"`
 	Hinted  int `json:"hinted"`
+	Cleaned int `json:"cleaned"`
 }
 
 func (n *Node) rebalance(ctx context.Context) rebalanceResult {
@@ -22,6 +24,9 @@ func (n *Node) rebalance(ctx context.Context) rebalanceResult {
 
 	for key, value := range snapshot {
 		replicas := n.replicasFor(key)
+
+		allCopied := true
+
 		for _, replica := range replicas {
 			if replica == n.addr {
 				continue
@@ -32,10 +37,27 @@ func (n *Node) rebalance(ctx context.Context) rebalanceResult {
 				result.Failed++
 				n.hints.Add(replica, key, value)
 				result.Hinted++
+				allCopied = false
 				continue
 			}
 
 			result.Copied++
+		}
+
+		// 当前节点仍然属于 replica set，必须保留本地副本
+		if slices.Contains(replicas, n.addr) {
+			continue
+		}
+
+		// 至少一个新 replica 没有确认成功，保守继续保留旧副本
+		if !allCopied {
+			continue
+		}
+
+		// 只有当前本地版本仍等于 snapshot 中的版本才能删除
+		// 防止 rebalance 期间新的写入被误删
+		if n.store.DeleteIfMatch(key, value.Version) {
+			result.Cleaned++
 		}
 	}
 

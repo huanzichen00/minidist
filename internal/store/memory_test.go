@@ -80,3 +80,26 @@ func TestOlderValueCannotResurrectTombstone(t *testing.T) {
 		t.Fatalf("expected tombstone v10 to remain, got found=%t deleted=%t version=%d", ok, got.Deleted, got.Version.Counter)
 	}
 }
+
+func TestMemoryDeleteIfMatch(t *testing.T) {
+	memory := NewMemory()
+	value := Value{
+		Data:    []byte("value"),
+		Version: Version{Counter: 10, NodeID: "node-a"},
+	}
+	memory.Set("foo", value)
+
+	if memory.DeleteIfMatch("foo", Version{Counter: 9, NodeID: "node-a"}) {
+		t.Fatal("expected mismatched version not to delete value")
+	}
+	if _, ok := memory.Get("foo"); !ok {
+		t.Fatal("expected value to remain after mismatched delete")
+	}
+
+	if !memory.DeleteIfMatch("foo", value.Version) {
+		t.Fatal("expected matching version to delete value")
+	}
+	if _, ok := memory.Get("foo"); ok {
+		t.Fatal("expected value to be deleted")
+	}
+}
