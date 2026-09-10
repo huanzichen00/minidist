@@ -20,9 +20,8 @@ type memberDebugState struct {
 }
 
 type membersDebugResponse struct {
-	ConfigVersion  uint64             `json:"config_version"`
-	ClusterMembers []string           `json:"cluster_members"`
-	Health         []memberDebugState `json:"health"`
+	Config ClusterConfig      `json:"config"`
+	Health []memberDebugState `json:"health"`
 }
 
 func (n *Node) handleDebugKV(w http.ResponseWriter, r *http.Request) {
@@ -90,9 +89,11 @@ func (n *Node) handleDebugMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := membersDebugResponse{
-		ConfigVersion:  n.configVersion.Load(),
-		ClusterMembers: n.ring.Members(),
-		Health:         n.fd.Snapshot(),
+		Config: ClusterConfig{
+			Version: n.configVersion.Load(),
+			Members: n.ring.Members(),
+		},
+		Health: n.fd.Snapshot(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
