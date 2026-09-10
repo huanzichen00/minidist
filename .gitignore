@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Go 编译产物与测试输出
+node
+*.test
+*.out
+coverage.*
+
+# 编辑器
+.idea/
+.vscode/
