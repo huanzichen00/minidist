@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 )
@@ -36,26 +37,16 @@ func (n *Node) AddMember(ctx context.Context, member string) error {
 	allMembers = append(allMembers, current...)
 	allMembers = append(allMembers, member)
 
-	version := n.configVersion.Load() + 1
-
-	config := ClusterConfig{
-		Version: version,
+	previous := ClusterConfig{
+		Version: n.configVersion.Load(),
+		Members: current,
+	}
+	next := ClusterConfig{
+		Version: previous.Version + 1,
 		Members: allMembers,
 	}
 
-	for _, target := range allMembers {
-		if err := n.sendMembershipSync(ctx, target, config); err != nil {
-			return err
-		}
-	}
-
-	for _, target := range allMembers {
-		if _, err := n.sendRebalance(ctx, target); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return n.applyClusterConfig(ctx, allMembers, previous, next)
 }
 
 func (n *Node) sendMembershipSync(ctx context.Context, target string, config ClusterConfig) error {
@@ -109,30 +100,65 @@ func (n *Node) RemoveMember(ctx context.Context, member string) error {
 		return err
 	}
 
-	// Phase 2:
-	// drain 成功后，才正式更新剩余节点的 membership
-	version := n.configVersion.Load() + 1
-
-	config := ClusterConfig{
-		Version: version,
+	previous := ClusterConfig{
+		Version: n.configVersion.Load(),
+		Members: current,
+	}
+	next := ClusterConfig{
+		Version: previous.Version + 1,
 		Members: futureMembers,
 	}
 
-	for _, target := range futureMembers {
-		if err := n.sendMembershipSync(ctx, target, config); err != nil {
-			return err
+	return n.applyClusterConfig(ctx, futureMembers, previous, next)
+}
+
+func (n *Node) applyClusterConfig(
+	ctx context.Context,
+	targets []string,
+	previous ClusterConfig,
+	next ClusterConfig,
+) error {
+	applied := make([]string, 0, len(targets))
+
+	for _, target := range targets {
+		if err := n.sendMembershipSync(ctx, target, next); err != nil {
+			n.compensateClusterConfig(ctx, applied, previous, next.Version+1)
+			return fmt.Errorf("sync config to %s: %w", target, err)
 		}
+
+		applied = append(applied, target)
 	}
 
-	// Phase 3:
-	// 让剩余节点按新的 ring 再做一次 rebalance / cleanup
-	for _, target := range futureMembers {
+	for _, target := range targets {
 		if _, err := n.sendRebalance(ctx, target); err != nil {
-			return err
+			n.compensateClusterConfig(ctx, applied, previous, next.Version+1)
+			return fmt.Errorf("rebalance on %s: %w", target, err)
 		}
 	}
 
 	return nil
+}
+
+func (n *Node) compensateClusterConfig(
+	ctx context.Context,
+	targets []string,
+	previous ClusterConfig,
+	version uint64,
+) {
+	rollback := ClusterConfig{
+		Version: version,
+		Members: previous.Members,
+	}
+
+	for _, target := range targets {
+		if err := n.sendMembershipSync(ctx, target, rollback); err != nil {
+			log.Printf("compensate config on %s failed: %v", target, err)
+		}
+	}
+
+	if !slices.Contains(targets, n.addr) {
+		n.configVersion.Store(version)
+	}
 }
 
 func removeMember(members []string, member string) []string {
