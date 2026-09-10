@@ -11,6 +11,7 @@ import (
 
 type membershipUpdateRequest struct {
 	Members []string `json:"members"`
+	Version uint64   `json:"version"`
 }
 
 type addMemberAdminRequest struct {
@@ -24,12 +25,19 @@ type removeMemberAdminRequest struct {
 func (n *Node) AddMember(ctx context.Context, member string) error {
 	current := n.ring.Members()
 
+	if slices.Contains(current, member) {
+		return nil
+	}
+
 	allMembers := make([]string, 0, len(current)+1)
 	allMembers = append(allMembers, current...)
 	allMembers = append(allMembers, member)
 
+	n.configVersion.Add(1)
+	version := n.configVersion.Load()
+
 	for _, target := range allMembers {
-		if err := n.sendMembershipSync(ctx, target, allMembers); err != nil {
+		if err := n.sendMembershipSync(ctx, target, allMembers, version); err != nil {
 			return err
 		}
 	}
@@ -43,9 +51,10 @@ func (n *Node) AddMember(ctx context.Context, member string) error {
 	return nil
 }
 
-func (n *Node) sendMembershipSync(ctx context.Context, target string, members []string) error {
+func (n *Node) sendMembershipSync(ctx context.Context, target string, members []string, version uint64) error {
 	payload, err := json.Marshal(membershipUpdateRequest{
 		Members: members,
+		Version: version,
 	})
 
 	if err != nil {
@@ -95,8 +104,10 @@ func (n *Node) RemoveMember(ctx context.Context, member string) error {
 
 	// Phase 2:
 	// drain 成功后，才正式更新剩余节点的 membership
+	n.configVersion.Add(1)
+	version := n.configVersion.Load()
 	for _, target := range futureMembers {
-		if err := n.sendMembershipSync(ctx, target, futureMembers); err != nil {
+		if err := n.sendMembershipSync(ctx, target, futureMembers, version); err != nil {
 			return err
 		}
 	}

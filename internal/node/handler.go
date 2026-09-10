@@ -139,7 +139,16 @@ func (n *Node) handleGossip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n.fd.Merge(req.Members)
+	members := n.ring.Members()
+
+	filtered := make([]gossipMember, 0, len(req.Members))
+	for _, member := range req.Members {
+		if slices.Contains(members, member.Node) {
+			filtered = append(filtered, member)
+		}
+	}
+
+	n.fd.Merge(filtered)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -156,11 +165,19 @@ func (n *Node) handleMembershipSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Version < n.configVersion.Load() {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	n.configVersion.Store(req.Version)
+
 	current := n.ring.Members()
 
 	for _, member := range current {
 		if !slices.Contains(req.Members, member) {
 			n.ring.Remove(member)
+			n.fd.UntrackMember(member)
 		}
 	}
 

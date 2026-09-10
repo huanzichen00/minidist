@@ -25,7 +25,8 @@ type Node struct {
 	// R
 	readQuorum int
 
-	version atomic.Uint64
+	version       atomic.Uint64
+	configVersion atomic.Uint64
 
 	hints *hintStore
 

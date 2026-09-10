@@ -243,3 +243,10 @@ func (f *failureDetector) TrackMember(node string) {
 		LastSuccess: time.Now(),
 	}
 }
+
+func (fd *failureDetector) UntrackMember(member string) {
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+
+	delete(fd.members, member)
+}
