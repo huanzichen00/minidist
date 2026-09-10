@@ -4,6 +4,7 @@ import (
 	"minidist/internal/hashring"
 	"minidist/internal/store"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -27,6 +28,7 @@ type Node struct {
 
 	version       atomic.Uint64
 	configVersion atomic.Uint64
+	configMu      sync.Mutex
 
 	hints *hintStore
 

@@ -159,32 +159,37 @@ func (n *Node) handleMembershipSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req membershipUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var config ClusterConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if req.Version < n.configVersion.Load() {
+	if config.Version == 0 {
+		http.Error(w, "invalid config version", http.StatusBadRequest)
+		return
+	}
+
+	if config.Version <= n.configVersion.Load() {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	n.configVersion.Store(req.Version)
-
 	current := n.ring.Members()
 
 	for _, member := range current {
-		if !slices.Contains(req.Members, member) {
+		if !slices.Contains(config.Members, member) {
 			n.ring.Remove(member)
 			n.fd.UntrackMember(member)
 		}
 	}
 
-	for _, member := range req.Members {
+	for _, member := range config.Members {
 		n.ring.Add(member)
 		n.fd.TrackMember(member)
 	}
+
+	n.configVersion.Store(config.Version)
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -9,11 +9,6 @@ import (
 	"slices"
 )
 
-type membershipUpdateRequest struct {
-	Members []string `json:"members"`
-	Version uint64   `json:"version"`
-}
-
 type addMemberAdminRequest struct {
 	Member string `json:"member"`
 }
@@ -22,7 +17,15 @@ type removeMemberAdminRequest struct {
 	Member string `json:"member"`
 }
 
+type ClusterConfig struct {
+	Version uint64   `json:"version"`
+	Members []string `json:"members"`
+}
+
 func (n *Node) AddMember(ctx context.Context, member string) error {
+	n.configMu.Lock()
+	defer n.configMu.Unlock()
+
 	current := n.ring.Members()
 
 	if slices.Contains(current, member) {
@@ -33,11 +36,15 @@ func (n *Node) AddMember(ctx context.Context, member string) error {
 	allMembers = append(allMembers, current...)
 	allMembers = append(allMembers, member)
 
-	n.configVersion.Add(1)
-	version := n.configVersion.Load()
+	version := n.configVersion.Load() + 1
+
+	config := ClusterConfig{
+		Version: version,
+		Members: allMembers,
+	}
 
 	for _, target := range allMembers {
-		if err := n.sendMembershipSync(ctx, target, allMembers, version); err != nil {
+		if err := n.sendMembershipSync(ctx, target, config); err != nil {
 			return err
 		}
 	}
@@ -51,11 +58,8 @@ func (n *Node) AddMember(ctx context.Context, member string) error {
 	return nil
 }
 
-func (n *Node) sendMembershipSync(ctx context.Context, target string, members []string, version uint64) error {
-	payload, err := json.Marshal(membershipUpdateRequest{
-		Members: members,
-		Version: version,
-	})
+func (n *Node) sendMembershipSync(ctx context.Context, target string, config ClusterConfig) error {
+	payload, err := json.Marshal(config)
 
 	if err != nil {
 		return err
@@ -84,6 +88,9 @@ func (n *Node) sendMembershipSync(ctx context.Context, target string, members []
 }
 
 func (n *Node) RemoveMember(ctx context.Context, member string) error {
+	n.configMu.Lock()
+	defer n.configMu.Unlock()
+
 	current := n.ring.Members()
 
 	if !slices.Contains(current, member) {
@@ -104,10 +111,15 @@ func (n *Node) RemoveMember(ctx context.Context, member string) error {
 
 	// Phase 2:
 	// drain 成功后，才正式更新剩余节点的 membership
-	n.configVersion.Add(1)
-	version := n.configVersion.Load()
+	version := n.configVersion.Load() + 1
+
+	config := ClusterConfig{
+		Version: version,
+		Members: futureMembers,
+	}
+
 	for _, target := range futureMembers {
-		if err := n.sendMembershipSync(ctx, target, futureMembers, version); err != nil {
+		if err := n.sendMembershipSync(ctx, target, config); err != nil {
 			return err
 		}
 	}

@@ -20,6 +20,7 @@ type memberDebugState struct {
 }
 
 type membersDebugResponse struct {
+	ConfigVersion  uint64             `json:"config_version"`
 	ClusterMembers []string           `json:"cluster_members"`
 	Health         []memberDebugState `json:"health"`
 }
@@ -89,6 +90,7 @@ func (n *Node) handleDebugMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := membersDebugResponse{
+		ConfigVersion:  n.configVersion.Load(),
 		ClusterMembers: n.ring.Members(),
 		Health:         n.fd.Snapshot(),
 	}
