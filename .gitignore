@@ -2,7 +2,7 @@
 .DS_Store
 
 # Go 编译产物与测试输出
-node
+/node
 *.test
 *.out
 coverage.*
