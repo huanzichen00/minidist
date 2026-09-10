@@ -30,7 +30,7 @@ func (n *Node) AddMember(ctx context.Context, member string) error {
 	}
 
 	for _, target := range allMembers {
-		if err := n.sendRebalance(ctx, target); err != nil {
+		if _, err := n.sendRebalance(ctx, target); err != nil {
 			return err
 		}
 	}

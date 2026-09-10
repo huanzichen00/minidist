@@ -168,9 +168,13 @@ func (n *Node) handleRebalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n.rebalance(r.Context())
+	result := n.rebalance(r.Context())
 
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		http.Error(w, "encode rebalance result failed", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (n *Node) handleAdminAddMember(w http.ResponseWriter, r *http.Request) {
