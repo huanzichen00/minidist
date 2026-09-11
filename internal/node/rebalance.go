@@ -56,7 +56,13 @@ func (n *Node) rebalance(ctx context.Context) rebalanceResult {
 
 		// 只有当前本地版本仍等于 snapshot 中的版本才能删除
 		// 防止 rebalance 期间新的写入被误删
-		if n.store.DeleteIfMatch(key, value.Version) {
+		cleaned, err := n.store.DeleteIfMatch(key, value.Version)
+		if err != nil {
+			result.Failed++
+			continue
+		}
+
+		if cleaned {
 			result.Cleaned++
 		}
 	}

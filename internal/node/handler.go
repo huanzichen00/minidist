@@ -88,7 +88,10 @@ func (n *Node) handleInternalPut(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 
-	n.store.Set(key, value)
+	if err := n.store.Set(key, value); err != nil {
+		http.Error(w, "store value failed", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

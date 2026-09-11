@@ -26,11 +26,29 @@ func main() {
 		"cluster nodes",
 	)
 
+	walPath := flag.String(
+		"wal",
+		"",
+		"WAL file path",
+	)
+
 	flag.Parse()
 
 	nodes := strings.Split(*cluster, ",")
 
-	n := node.New(*addr, nodes)
+	if *walPath == "" {
+		*walPath = "minidist-" + strings.ReplaceAll(*addr, ":", "_") + ".wal"
+	}
+
+	n, err := node.New(*addr, nodes, *walPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := n.Close(); err != nil {
+			log.Printf("close node: %v", err)
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

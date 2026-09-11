@@ -187,8 +187,7 @@ func (n *Node) handleReplicatedDelete(w http.ResponseWriter, r *http.Request, ke
 
 func (n *Node) putReplica(ctx context.Context, replica string, key string, value store.Value) error {
 	if replica == n.addr {
-		n.store.Set(key, value)
-		return nil
+		return n.store.Set(key, value)
 	}
 
 	payload, err := json.Marshal(value)

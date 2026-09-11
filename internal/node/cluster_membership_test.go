@@ -4,13 +4,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestFailureDetectorMemberDoesNotBecomeRingMember(t *testing.T) {
-	n := New("node-a", []string{"node-a", "node-b", "node-c"})
+	n, err := New(
+		"node-a",
+		[]string{"node-a", "node-b", "node-c"},
+		filepath.Join(t.TempDir(), "node.wal"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n.fd.TrackMember("node-x")
 
 	want := []string{"node-a", "node-b", "node-c"}
@@ -38,7 +46,14 @@ func TestApplyClusterConfigCompensatesPartialSync(t *testing.T) {
 	}))
 	defer second.Close()
 
-	n := New("coordinator", []string{"coordinator"})
+	n, err := New(
+		"coordinator",
+		[]string{"coordinator"},
+		filepath.Join(t.TempDir(), "node.wal"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	previous := ClusterConfig{
 		Members: []string{"node-a", "node-b"},
 	}
@@ -47,7 +62,7 @@ func TestApplyClusterConfigCompensatesPartialSync(t *testing.T) {
 		Members: []string{"node-a", "node-b", "node-c"},
 	}
 
-	err := n.applyClusterConfig(
+	err = n.applyClusterConfig(
 		t.Context(),
 		[]string{
 			strings.TrimPrefix(first.URL, "http://"),

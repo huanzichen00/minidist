@@ -35,11 +35,15 @@ type Node struct {
 	fd *failureDetector
 }
 
-func New(addr string, nodes []string) *Node {
-	return &Node{
+func New(addr string, nodes []string, walPath string) (*Node, error) {
+	memory, err := store.OpenMemory(walPath)
+	if err != nil {
+		return nil, err
+	}
+	n := &Node{
 		addr:         addr,
 		ring:         hashring.New(nodes, 100),
-		store:        store.NewMemory(),
+		store:        memory,
 		virtualNodes: 100,
 
 		client: &http.Client{
@@ -53,4 +57,12 @@ func New(addr string, nodes []string) *Node {
 		hints: newHintStore(),
 		fd:    newFailureDetector(nodes, addr),
 	}
+
+	n.version.Store(memory.MaxVersionCounter())
+
+	return n, err
+}
+
+func (n *Node) Close() error {
+	return n.store.Close()
 }

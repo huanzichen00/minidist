@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestCompareVersionUsesCounter(t *testing.T) {
 	if got := CompareVersion(
@@ -89,17 +93,115 @@ func TestMemoryDeleteIfMatch(t *testing.T) {
 	}
 	memory.Set("foo", value)
 
-	if memory.DeleteIfMatch("foo", Version{Counter: 9, NodeID: "node-a"}) {
+	deleted, err := memory.DeleteIfMatch("foo", Version{Counter: 9, NodeID: "node-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted {
 		t.Fatal("expected mismatched version not to delete value")
 	}
 	if _, ok := memory.Get("foo"); !ok {
 		t.Fatal("expected value to remain after mismatched delete")
 	}
 
-	if !memory.DeleteIfMatch("foo", value.Version) {
+	deleted, err = memory.DeleteIfMatch("foo", value.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
 		t.Fatal("expected matching version to delete value")
 	}
 	if _, ok := memory.Get("foo"); ok {
 		t.Fatal("expected value to be deleted")
+	}
+}
+
+func TestMemoryWALReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+
+	memory, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value := Value{
+		Data:    []byte("value"),
+		Version: Version{Counter: 7, NodeID: "node-a"},
+	}
+	if err := memory.Set("deleted", value); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.DeleteIfMatch("deleted", value.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	tombstone := Value{
+		Version: Version{Counter: 11, NodeID: "node-a"},
+		Deleted: true,
+	}
+	if err := memory.Set("tombstone", tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+
+	if _, ok := recovered.Get("deleted"); ok {
+		t.Fatal("expected deleted key to stay deleted after replay")
+	}
+
+	got, ok := recovered.Get("tombstone")
+	if !ok || !got.Deleted || got.Version.Counter != 11 {
+		t.Fatalf("recovered tombstone = %#v, found=%t", got, ok)
+	}
+
+	if got := recovered.MaxVersionCounter(); got != 11 {
+		t.Fatalf("max version counter = %d, want 11", got)
+	}
+}
+
+func TestMemoryWALReplayIgnoresTruncatedTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+
+	memory, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Set("foo", Value{
+		Data:    []byte("value"),
+		Version: Version{Counter: 1, NodeID: "node-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := OpenMemory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+
+	got, ok := recovered.Get("foo")
+	if !ok || string(got.Data) != "value" {
+		t.Fatalf("recovered value = %#v, found=%t", got, ok)
 	}
 }
