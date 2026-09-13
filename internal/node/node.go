@@ -36,7 +36,7 @@ type Node struct {
 }
 
 func New(addr string, nodes []string, walPath string) (*Node, error) {
-	memory, err := store.OpenMemory(walPath)
+	memory, err := store.OpenMemory(walPath, walPath+".snapshot")
 	if err != nil {
 		return nil, err
 	}
@@ -60,9 +60,13 @@ func New(addr string, nodes []string, walPath string) (*Node, error) {
 
 	n.version.Store(memory.MaxVersionCounter())
 
-	return n, err
+	return n, nil
 }
 
 func (n *Node) Close() error {
 	return n.store.Close()
+}
+
+func (n *Node) SaveSnapshot() error {
+	return n.store.SaveSnapshot()
 }

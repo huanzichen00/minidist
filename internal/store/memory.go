@@ -23,6 +23,8 @@ type Memory struct {
 	data map[string]Value
 	wal  *WAL
 
+	snapshotPath string
+
 	maxVersionCounter uint64
 }
 
@@ -174,16 +176,24 @@ func (m *Memory) DeleteIfMatch(key string, version Version) (bool, error) {
 	return true, nil
 }
 
-func OpenMemory(path string) (*Memory, error) {
+func OpenMemory(path string, snapshotPath string) (*Memory, error) {
+	snapshot, err := loadSnapshot(snapshotPath)
+	if err != nil {
+		return nil, err
+	}
+
 	wal, err := OpenWAL(path)
 	if err != nil {
 		return nil, err
 	}
 
 	m := &Memory{
-		data: make(map[string]Value),
-		wal:  wal,
+		data:              make(map[string]Value, len(snapshot.Data)),
+		wal:               wal,
+		snapshotPath:      snapshotPath,
+		maxVersionCounter: snapshot.MaxVersionCounter,
 	}
+	maps.Copy(m.data, snapshot.Data)
 
 	if err := wal.Replay(func(data []byte) error {
 		var entry kvWALEntry
@@ -232,4 +242,26 @@ func (m *Memory) Close() error {
 	}
 
 	return m.wal.Close()
+}
+
+func (m *Memory) SaveSnapshot() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	snapshot := snapshotData{
+		Data:              make(map[string]Value, len(m.data)),
+		MaxVersionCounter: m.maxVersionCounter,
+	}
+
+	maps.Copy(snapshot.Data, m.data)
+
+	if err := saveSnapshot(m.snapshotPath, snapshot); err != nil {
+		return err
+	}
+
+	if err := m.wal.Truncate(); err != nil {
+		return err
+	}
+
+	return nil
 }

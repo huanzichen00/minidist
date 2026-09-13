@@ -130,3 +130,18 @@ func (w *WAL) Close() error {
 
 	return w.file.Close()
 }
+
+func (w *WAL) Truncate() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if err := w.file.Truncate(0); err != nil {
+		return err
+	}
+
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	return w.file.Sync()
+}

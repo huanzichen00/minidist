@@ -119,7 +119,7 @@ func TestMemoryDeleteIfMatch(t *testing.T) {
 func TestMemoryWALReplay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node.wal")
 
-	memory, err := OpenMemory(path)
+	memory, err := OpenMemory(path, path+".snapshot")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestMemoryWALReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered, err := OpenMemory(path)
+	recovered, err := OpenMemory(path, path+".snapshot")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestMemoryWALReplay(t *testing.T) {
 func TestMemoryWALReplayIgnoresTruncatedTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node.wal")
 
-	memory, err := OpenMemory(path)
+	memory, err := OpenMemory(path, path+".snapshot")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestMemoryWALReplayIgnoresTruncatedTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered, err := OpenMemory(path)
+	recovered, err := OpenMemory(path, path+".snapshot")
 	if err != nil {
 		t.Fatal(err)
 	}
