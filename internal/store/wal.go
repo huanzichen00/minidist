@@ -2,9 +2,19 @@ package store
 
 import (
 	"encoding/binary"
+	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"sync"
+)
+
+const (
+	walMagic      uint32 = 0x4D44574C // "MDWL"
+	walVersion    uint16 = 1
+	walHeaderSize        = 8
+
+	maxWALRecordSize uint32 = 16 * 1024 * 1024
 )
 
 // Write-Ahead Log
@@ -14,6 +24,8 @@ type WAL struct {
 	// 低层日志文件
 	// WAL 所有记录都追加到这个文件结尾
 	file *os.File
+
+	hasHeader bool
 }
 
 func OpenWAL(path string) (*WAL, error) {
@@ -31,8 +43,29 @@ func OpenWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+
+	hasHeader, err := detectWALHeader(file, info.Size())
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+
+	if info.Size() == 0 {
+		if err := writeWALHeader(file); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		hasHeader = true
+	}
+
 	return &WAL{
-		file: file,
+		file:      file,
+		hasHeader: hasHeader,
 	}, nil
 }
 
@@ -49,18 +82,11 @@ func (w *WAL) Append(data []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// uint32 最大可表示约 4GB
-	var size [4]byte
-	// BigEndian 把 uint32 编码成 4 个字节
-	binary.BigEndian.PutUint32(size[:], uint32(len(data)))
-
-	// 写长度
-	if _, err := w.file.Write(size[:]); err != nil {
-		return err
+	if uint64(len(data)) > uint64(maxWALRecordSize) {
+		return fmt.Errorf("wal record too large: %d bytes", len(data))
 	}
 
-	// 写 payload
-	if _, err := w.file.Write(data); err != nil {
+	if err := w.writeRecord(data); err != nil {
 		return err
 	}
 
@@ -74,49 +100,37 @@ func (w *WAL) Replay(apply func([]byte) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 指针移到文件开头
-	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+	validOffset := int64(0)
+	if w.hasHeader {
+		validOffset = walHeaderSize
+	}
+
+	if _, err := w.file.Seek(validOffset, io.SeekStart); err != nil {
 		return err
 	}
 
 	for {
-		var size [4]byte
-
-		// ReadFull 保证读满 4 字节或返回错误
-		_, err := io.ReadFull(w.file, size[:])
+		data, err := w.readRecord()
 		if err == io.EOF {
 			break
 		}
-
-		// 文件最后连 4 字节长度字段都没写完整
-		// 先忽略
 		if err == io.ErrUnexpectedEOF {
-			break
+			return w.repairTail(validOffset)
 		}
-
 		if err != nil {
 			return err
 		}
 
-		// 解码回 uint32
-		length := binary.BigEndian.Uint32(size[:])
-		data := make([]byte, length)
-
-		// 长度字段写成功但 payload 写了一部分就崩溃
-		_, err = io.ReadFull(w.file, data)
-		if err == io.ErrUnexpectedEOF {
-			break
-		}
-
-		if err != nil {
-			return err
-		}
-
-		// 解释数据由上层实现
-		// WAL 不解析 payload
 		if err := apply(data); err != nil {
 			return err
 		}
+
+		offset, err := w.file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
+
+		validOffset = offset
 	}
 
 	// 文件偏移移到末尾
@@ -142,6 +156,10 @@ func (w *WAL) Truncate() error {
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+	if err := writeWALHeader(w.file); err != nil {
+		return err
+	}
+	w.hasHeader = true
 
 	return w.file.Sync()
 }
@@ -155,5 +173,133 @@ func (w *WAL) Size() (int64, error) {
 		return 0, err
 	}
 
-	return info.Size(), nil
+	size := info.Size()
+	if w.hasHeader {
+		size -= walHeaderSize
+	}
+	if size < 0 {
+		return 0, nil
+	}
+
+	return size, nil
+}
+
+func (w *WAL) repairTail(validOffset int64) error {
+	if err := w.file.Truncate(validOffset); err != nil {
+		return err
+	}
+
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+
+	_, err := w.file.Seek(0, io.SeekEnd)
+	return err
+}
+
+func writeWALHeader(file *os.File) error {
+	var header [walHeaderSize]byte
+
+	binary.BigEndian.PutUint32(header[0:4], walMagic)
+	binary.BigEndian.PutUint16(header[4:6], walVersion)
+
+	if _, err := file.Write(header[:]); err != nil {
+		return err
+	}
+
+	return file.Sync()
+}
+
+func detectWALHeader(file *os.File, size int64) (bool, error) {
+	if size < 4 {
+		return false, nil
+	}
+
+	var magicBytes [4]byte
+	if _, err := file.ReadAt(magicBytes[:], 0); err != nil {
+		return false, err
+	}
+
+	if binary.BigEndian.Uint32(magicBytes[:]) != walMagic {
+		return false, nil
+	}
+
+	if size < walHeaderSize {
+		return false, fmt.Errorf("wal header is incomplete")
+	}
+
+	return true, validateWALHeader(file)
+}
+
+func validateWALHeader(file *os.File) error {
+	var header [walHeaderSize]byte
+
+	if _, err := file.ReadAt(header[:], 0); err != nil {
+		return err
+	}
+
+	magic := binary.BigEndian.Uint32(header[0:4])
+	if magic != walMagic {
+		return fmt.Errorf("invalid wal magic: got %08x", magic)
+	}
+
+	version := binary.BigEndian.Uint16(header[4:6])
+	if version != walVersion {
+		return fmt.Errorf("unsupported wal version: %d", version)
+	}
+
+	return nil
+}
+
+func (w *WAL) writeRecord(data []byte) error {
+	if w.hasHeader {
+		var header [8]byte
+		binary.BigEndian.PutUint32(header[0:4], uint32(len(data)))
+		binary.BigEndian.PutUint32(header[4:8], crc32.ChecksumIEEE(data))
+		if _, err := w.file.Write(header[:]); err != nil {
+			return err
+		}
+	} else {
+		var header [4]byte
+		binary.BigEndian.PutUint32(header[:], uint32(len(data)))
+		if _, err := w.file.Write(header[:]); err != nil {
+			return err
+		}
+	}
+
+	_, err := w.file.Write(data)
+	return err
+}
+
+func (w *WAL) readRecord() ([]byte, error) {
+	headerSize := 4
+	if w.hasHeader {
+		headerSize = 8
+	}
+
+	header := make([]byte, headerSize)
+	if _, err := io.ReadFull(w.file, header); err != nil {
+		return nil, err
+	}
+
+	length := binary.BigEndian.Uint32(header[0:4])
+	if length > maxWALRecordSize {
+		return nil, fmt.Errorf("wal record too large: %d bytes", length)
+	}
+
+	data := make([]byte, length)
+	if _, err := io.ReadFull(w.file, data); err != nil {
+		return nil, err
+	}
+
+	if w.hasHeader {
+		expectedChecksum := binary.BigEndian.Uint32(header[4:8])
+		actualChecksum := crc32.ChecksumIEEE(data)
+		if actualChecksum != expectedChecksum {
+			return nil, fmt.Errorf("wal checksum mismatch: expected %08x, got %08x",
+				expectedChecksum, actualChecksum)
+		}
+	}
+
+	return data, nil
 }

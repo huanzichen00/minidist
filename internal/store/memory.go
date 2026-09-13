@@ -318,3 +318,11 @@ func (m *Memory) SaveSnapshot() error {
 
 	return m.saveSnapshot()
 }
+
+func (m *Memory) WALSize() (int64, error) {
+	if m.wal == nil {
+		return 0, nil
+	}
+
+	return m.wal.Size()
+}

@@ -1,8 +1,11 @@
 package store
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -232,5 +235,129 @@ func TestMemoryMaybeSnapshotCompactsWAL(t *testing.T) {
 	}
 	if size != 0 {
 		t.Fatalf("WAL size = %d, want 0", size)
+	}
+}
+
+func TestMemoryRecoversLegacyWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+	entry, err := json.Marshal(kvWALEntry{
+		Op:    walOpSet,
+		Key:   "foo",
+		Value: Value{Data: []byte("value"), Version: Version{Counter: 1, NodeID: "node-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(entry)))
+	if _, err := file.Write(length[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	memory, err := OpenMemory(path, path+".snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memory.Close()
+
+	value, ok := memory.Get("foo")
+	if !ok || string(value.Data) != "value" {
+		t.Fatalf("legacy value = %#v, found=%t", value, ok)
+	}
+}
+
+func TestWALReplayRepairsTruncatedPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Append([]byte("record")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+
+	wal, err = OpenWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	if err := wal.Replay(func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	if size, err := wal.Size(); err != nil || size != 0 {
+		t.Fatalf("WAL size = %d, err = %v", size, err)
+	}
+}
+
+func TestWALReplayRejectsChecksumMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+	wal, err := OpenWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Append([]byte("record")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteAt([]byte("x"), walHeaderSize+8); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	wal, err = OpenWAL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	err = wal.Replay(func([]byte) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("replay error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestWALAppendRejectsOversizedRecord(t *testing.T) {
+	wal, err := OpenWAL(filepath.Join(t.TempDir(), "node.wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal.Close()
+
+	err = wal.Append(make([]byte, int(maxWALRecordSize)+1))
+	if err == nil || !strings.Contains(err.Error(), "record too large") {
+		t.Fatalf("append error = %v, want record too large", err)
 	}
 }

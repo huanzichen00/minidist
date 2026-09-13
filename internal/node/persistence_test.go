@@ -48,12 +48,12 @@ func TestSnapshotCompactsWALAndRestoresKeys(t *testing.T) {
 		t.Fatalf("snapshot file: %v", err)
 	}
 
-	walInfo, err = os.Stat(walPath)
+	walSize, err := n.store.WALSize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if walInfo.Size() != 0 {
-		t.Fatalf("WAL size = %d, want 0", walInfo.Size())
+	if walSize != 0 {
+		t.Fatalf("WAL size = %d, want 0", walSize)
 	}
 
 	server.Close()
