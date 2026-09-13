@@ -145,3 +145,15 @@ func (w *WAL) Truncate() error {
 
 	return w.file.Sync()
 }
+
+func (w *WAL) Size() (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	info, err := w.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+
+	return info.Size(), nil
+}

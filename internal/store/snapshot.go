@@ -11,7 +11,7 @@ type snapshotData struct {
 }
 
 func saveSnapshot(path string, snapshot snapshotData) error {
-	tmpPath := path + "tmp"
+	tmpPath := path + ".tmp"
 
 	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {

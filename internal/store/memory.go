@@ -3,9 +3,12 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"sync"
 )
+
+const defaultSnapshotThreshold int64 = 64 * 1024 * 1024
 
 type Version struct {
 	Counter uint64 `json:"counter"`
@@ -23,7 +26,10 @@ type Memory struct {
 	data map[string]Value
 	wal  *WAL
 
-	snapshotPath string
+	snapshotPath      string
+	snapshotThreshold int64
+	// 保证同一时间只有一个 snapshot 任务
+	snapshotMu sync.Mutex
 
 	maxVersionCounter uint64
 }
@@ -50,11 +56,11 @@ func NewMemory() *Memory {
 
 func (m *Memory) Set(key string, value Value) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	current, ok := m.data[key]
 	if ok {
 		if CompareVersion(value.Version, current.Version) <= 0 {
+			m.mu.Unlock()
 			return nil
 		}
 	}
@@ -68,10 +74,12 @@ func (m *Memory) Set(key string, value Value) error {
 
 		data, err := json.Marshal(entry)
 		if err != nil {
+			m.mu.Unlock()
 			return err
 		}
 
 		if err = m.wal.Append(data); err != nil {
+			m.mu.Unlock()
 			return err
 		}
 	}
@@ -80,6 +88,12 @@ func (m *Memory) Set(key string, value Value) error {
 
 	if value.Version.Counter > m.maxVersionCounter {
 		m.maxVersionCounter = value.Version.Counter
+	}
+
+	m.mu.Unlock()
+
+	if err := m.MaybeSnapshot(); err != nil {
+		log.Printf("maybe snapshot failed: %v", err)
 	}
 
 	return nil
@@ -144,14 +158,15 @@ func (m *Memory) Snapshot() map[string]Value {
 
 func (m *Memory) DeleteIfMatch(key string, version Version) (bool, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	current, ok := m.data[key]
 	if !ok {
+		m.mu.Unlock()
 		return false, nil
 	}
 
 	if CompareVersion(current.Version, version) != 0 {
+		m.mu.Unlock()
 		return false, nil
 	}
 
@@ -164,15 +179,23 @@ func (m *Memory) DeleteIfMatch(key string, version Version) (bool, error) {
 
 		data, err := json.Marshal(entry)
 		if err != nil {
+			m.mu.Unlock()
 			return false, err
 		}
 
 		if err := m.wal.Append(data); err != nil {
+			m.mu.Unlock()
 			return false, err
 		}
 	}
 
 	delete(m.data, key)
+	m.mu.Unlock()
+
+	if err := m.MaybeSnapshot(); err != nil {
+		log.Printf("maybe snapshot failed: %v", err)
+	}
+
 	return true, nil
 }
 
@@ -191,6 +214,7 @@ func OpenMemory(path string, snapshotPath string) (*Memory, error) {
 		data:              make(map[string]Value, len(snapshot.Data)),
 		wal:               wal,
 		snapshotPath:      snapshotPath,
+		snapshotThreshold: defaultSnapshotThreshold,
 		maxVersionCounter: snapshot.MaxVersionCounter,
 	}
 	maps.Copy(m.data, snapshot.Data)
@@ -244,7 +268,7 @@ func (m *Memory) Close() error {
 	return m.wal.Close()
 }
 
-func (m *Memory) SaveSnapshot() error {
+func (m *Memory) saveSnapshot() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -264,4 +288,33 @@ func (m *Memory) SaveSnapshot() error {
 	}
 
 	return nil
+}
+
+func (m *Memory) MaybeSnapshot() error {
+	if m.wal == nil {
+		return nil
+	}
+
+	if !m.snapshotMu.TryLock() {
+		return nil
+	}
+	defer m.snapshotMu.Unlock()
+
+	size, err := m.wal.Size()
+	if err != nil {
+		return err
+	}
+
+	if size < m.snapshotThreshold {
+		return nil
+	}
+
+	return m.saveSnapshot()
+}
+
+func (m *Memory) SaveSnapshot() error {
+	m.snapshotMu.Lock()
+	defer m.snapshotMu.Unlock()
+
+	return m.saveSnapshot()
 }

@@ -205,3 +205,32 @@ func TestMemoryWALReplayIgnoresTruncatedTail(t *testing.T) {
 		t.Fatalf("recovered value = %#v, found=%t", got, ok)
 	}
 }
+
+func TestMemoryMaybeSnapshotCompactsWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+	memory, err := OpenMemory(path, path+".snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer memory.Close()
+
+	memory.snapshotThreshold = 1
+	if err := memory.Set("foo", Value{
+		Data:    []byte("value"),
+		Version: Version{Counter: 1, NodeID: "node-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(path + ".snapshot"); err != nil {
+		t.Fatalf("snapshot file: %v", err)
+	}
+
+	size, err := memory.wal.Size()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 0 {
+		t.Fatalf("WAL size = %d, want 0", size)
+	}
+}
