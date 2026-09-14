@@ -53,6 +53,11 @@ func OpenWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 
+	if info.Size() > 0 && info.Size() < walHeaderSize {
+		_ = file.Close()
+		return nil, fmt.Errorf("wal header is incomplete")
+	}
+
 	if info.Size() == 0 {
 		if err := writeWALHeader(file); err != nil {
 			_ = file.Close()
@@ -179,14 +184,11 @@ func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := w.file.Truncate(0); err != nil {
+	if err := w.file.Truncate(walHeaderSize); err != nil {
 		return err
 	}
 
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if err := writeWALHeader(w.file); err != nil {
 		return err
 	}
 

@@ -312,6 +312,19 @@ func TestWALReplayRejectsChecksumMismatch(t *testing.T) {
 	}
 }
 
+// TestOpenWALRejectsIncompleteHeader 验证不完整的 WAL header 会失败。
+func TestOpenWALRejectsIncompleteHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.wal")
+	if err := os.WriteFile(path, make([]byte, walHeaderSize-1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := OpenWAL(path)
+	if err == nil || !strings.Contains(err.Error(), "wal header is incomplete") {
+		t.Fatalf("open error = %v, want incomplete wal header", err)
+	}
+}
+
 func TestWALAppendRejectsOversizedRecord(t *testing.T) {
 	wal, err := OpenWAL(filepath.Join(t.TempDir(), "node.wal"))
 	if err != nil {
