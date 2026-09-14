@@ -3,6 +3,7 @@ package chunk
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +120,32 @@ func TestStoreDeleteIsIdempotent(t *testing.T) {
 	}
 	if err := store.Delete(id); err != nil {
 		t.Fatalf("second delete error = %v", err)
+	}
+}
+
+// TestStoreWriteFromHeaderSplitsFinalChunk 验证数据流会保留最后的不完整 chunk。
+func TestStoreWriteFromHeaderSplitsFinalChunk(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chunks, err := store.WriteFromHeader(strings.NewReader("0123456789"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"0123", "4567", "89"}
+	if len(chunks) != len(want) {
+		t.Fatalf("chunk count = %d, want %d", len(chunks), len(want))
+	}
+	for i, chunk := range chunks {
+		data, err := store.Get(chunk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != want[i] || chunk.Size != len(want[i]) {
+			t.Fatalf("chunk %d = %q (%d bytes), want %q (%d bytes)", i, data, chunk.Size, want[i], len(want[i]))
+		}
 	}
 }
