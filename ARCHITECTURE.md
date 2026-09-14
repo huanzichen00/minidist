@@ -1,6 +1,6 @@
 # MiniDist 项目架构
 
-本文描述当前 `main` 分支的实现（`v13`）。MiniDist 是一个基于 HTTP 的内存 KV 集群：使用一致性哈希选择副本，以 `N=3 / W=2 / R=2` 实现 quorum 读写，并提供读修复、hinted handoff、故障探测、gossip 与成员变更期间的数据迁移。
+本文描述当前 `main` 分支的实现（`v22.3`）。MiniDist 是一个基于 HTTP 的内存 KV 集群：使用一致性哈希选择副本，以 `N=3 / W=2 / R=2` 实现 quorum 读写，并提供读修复、hinted handoff、故障探测、gossip、成员变更期间的数据迁移和本地持久化。
 
 ## 总览
 
@@ -38,7 +38,9 @@ minidist/
 ├── internal/hashring/
 │   └── ring.go                       # 一致性哈希环、虚拟节点、Get/GetN、成员增删
 ├── internal/store/
-│   └── memory.go                     # 内存 KV、版本比较、快照、条件删除
+│   ├── memory.go                     # 内存 KV、版本比较、快照、条件删除
+│   ├── wal.go                        # 带 header 和 CRC32 的 WAL、回放与尾部修复
+│   └── snapshot.go                   # 带 header 和 CRC32 的快照保存与加载
 └── internal/node/
     ├── node.go                       # Node 依赖与 N/W/R 默认配置
     ├── handler.go                    # HTTP 路由与内部/管理接口 handler
@@ -55,7 +57,7 @@ minidist/
     └── debug.go                      # 调试接口
 ```
 
-对应的 `*_test.go` 覆盖 hash ring、内存存储、hint、membership 与部分集群成员行为。
+对应的 `*_test.go` 覆盖 hash ring、内存存储、WAL/快照持久化、hint、membership 与部分集群成员行为。
 
 ## Node 的核心状态
 
@@ -71,6 +73,8 @@ classDiagram
       -int writeQuorum
       -int readQuorum
       -atomic.Uint64 version
+      -atomic.Uint64 configVersion
+      -Mutex configMu
       -hintStore hints
       -failureDetector fd
     }
@@ -116,6 +120,25 @@ classDiagram
 - 版本按 `(Counter, NodeID)` 比较；Counter 相同时 NodeID 用作确定性 tie-break。
 - `fd` 维护存活状态、incarnation 和状态版本，用于探测与 gossip；它与 ring 是两套独立状态。
 
+## 本地持久化
+
+`store.Memory` 使用 WAL 和 snapshot 保存节点本地状态：
+
+```text
+写入/删除 -> 追加 WAL 记录并 fsync -> 内存更新
+                         |
+                         +-- 达到阈值或手动 SaveSnapshot
+                             -> 原子写入 snapshot
+                             -> fsync snapshot
+                             -> 截断 WAL，保留 WAL header
+```
+
+- WAL 文件先写 8 字节 header（`MDWL`、version），每条记录包含 payload 长度、CRC32 和 JSON payload。
+- snapshot 文件先写 16 字节 header（`MDSP`、version、reserved、长度、CRC32），payload 是 `snapshotData` 的 JSON。
+- 节点启动时先加载 snapshot，再回放 WAL；回放返回 `ReplayStats`，记录回放条数和是否修复了损坏的尾部。
+- WAL 尾部出现不完整记录时会截断到最后一条完整记录；header 或 CRC 校验失败则启动失败。
+- 当前只支持最新的 WAL 和 snapshot 格式，不兼容旧版纯 JSON snapshot 或 legacy WAL；切换格式后可删除旧数据文件重新生成。
+
 ## HTTP 接口
 
 | 路径 | 方法 | 用途 |
@@ -134,9 +157,9 @@ classDiagram
 | `/internal/debug/kv/{key}` | `GET` / `PUT` | 直接查看或写入本地存储（调试） |
 | `/internal/debug/hints` | `GET` | 查看本地 hints |
 | `/internal/debug/members` | `GET` | 查看 ring 成员和 failure detector 状态 |
-| `/admin/members` | `POST` | 添加成员 |
+| `/admin/members` | `POST` / `DELETE` | 添加 / 移除成员 |
 
-说明：当前 `RemoveMember(ctx, member)` 是 Node 方法，尚未注册对应的管理 HTTP 删除接口；`removeMemberAdminRequest` 也尚未被 handler 使用。
+成员变更接口会同步完整成员配置，并在添加或移除后执行 rebalance；移除成员前会先执行 drain。
 
 ## 数据写入与删除
 
@@ -278,8 +301,9 @@ flowchart LR
 | 版本分配 | 先 quorum 读取最大 Counter，再以 `atomic.CompareAndSwap` 分配本节点的下一个 Counter。 |
 | read repair | 仅对本次读成功的副本执行；失败副本不在该次读中修复。 |
 | hint | 按 `(replica,key)` 只保留最新值；重放成功后以版本匹配方式删除。 |
-| 成员同步 | 请求中给出完整成员列表；ring 会删除缺失成员、添加新成员。failure detector 当前只新增追踪成员，不会因同步请求删除历史条目。 |
+| 成员同步 | 请求中给出完整成员列表；ring 和 failure detector 都会删除缺失成员、添加新成员，并按 configVersion 忽略旧配置。 |
 | 进程退出 | `main` 监听 `SIGINT` / `SIGTERM`，取消后台任务并在最多 5 秒内关闭 HTTP server。 |
+| 本地持久化 | 启动加载 snapshot 并回放 WAL；snapshot 成功保存后 WAL 截断为仅含 header 的文件。 |
 
 ## 典型启动方式
 

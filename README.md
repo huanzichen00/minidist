@@ -14,6 +14,7 @@ MiniDist 是一个用 Go 实现的、基于 HTTP 的内存 KV 集群。节点使
 - 集群扩容：成员同步、rebalance 与旧副本安全清理
 - 节点移除流程：drain 到 future ring、成员同步和 rebalance
 - 调试接口：查看本地 KV、hints、ring 成员和节点健康状态
+- 本地持久化：WAL、CRC32 校验、snapshot、启动恢复和损坏尾部修复
 
 完整设计见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -64,6 +65,18 @@ curl -X POST http://127.0.0.1:8081/admin/members \
   -H 'Content-Type: application/json' \
   -d '{"member":"127.0.0.1:8084"}'
 ```
+
+移除节点：
+
+```bash
+curl -X DELETE http://127.0.0.1:8081/admin/members \
+  -H 'Content-Type: application/json' \
+  -d '{"member":"127.0.0.1:8084"}'
+```
+
+每个节点默认把 WAL 保存为当前目录下的 `minidist-127.0.0.1_<port>.wal`，snapshot 文件使用同名 `.snapshot` 后缀。节点启动时会先恢复 snapshot，再回放 WAL；达到阈值或调用 `SaveSnapshot()` 后会原子保存 snapshot 并截断 WAL。
+
+当前只支持最新的 WAL 和 snapshot 格式。开发阶段切换持久化格式后，可以删除对应的 `.wal` 和 `.snapshot` 文件再启动节点。
 
 运行测试：
 
