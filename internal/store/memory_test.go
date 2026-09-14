@@ -1,8 +1,6 @@
 package store
 
 import (
-	"encoding/binary"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,45 +233,6 @@ func TestMemoryMaybeSnapshotCompactsWAL(t *testing.T) {
 	}
 	if size != 0 {
 		t.Fatalf("WAL size = %d, want 0", size)
-	}
-}
-
-func TestMemoryRecoversLegacyWAL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "node.wal")
-	entry, err := json.Marshal(kvWALEntry{
-		Op:    walOpSet,
-		Key:   "foo",
-		Value: Value{Data: []byte("value"), Version: Version{Counter: 1, NodeID: "node-a"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(entry)))
-	if _, err := file.Write(length[:]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.Write(entry); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	memory, err := OpenMemory(path, path+".snapshot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer memory.Close()
-
-	value, ok := memory.Get("foo")
-	if !ok || string(value.Data) != "value" {
-		t.Fatalf("legacy value = %#v, found=%t", value, ok)
 	}
 }
 
