@@ -219,7 +219,7 @@ func OpenMemory(path string, snapshotPath string) (*Memory, error) {
 	}
 	maps.Copy(m.data, snapshot.Data)
 
-	if err := wal.Replay(func(data []byte) error {
+	replayStats, err := wal.Replay(func(data []byte) error {
 		var entry kvWALEntry
 
 		if err := json.Unmarshal(data, &entry); err != nil {
@@ -245,11 +245,13 @@ func OpenMemory(path string, snapshotPath string) (*Memory, error) {
 		}
 
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		_ = wal.Close()
 		return nil, err
 	}
 
+	log.Printf("store recovery complete: snapshot_keys=%d wal_records=%d tail_repaired=%t keys=%d max_version=%d", len(snapshot.Data), replayStats.Records, replayStats.TailRepaired, len(m.data), m.maxVersionCounter)
 	return m, nil
 }
 

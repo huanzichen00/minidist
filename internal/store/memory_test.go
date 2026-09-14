@@ -304,8 +304,12 @@ func TestWALReplayRepairsTruncatedPayload(t *testing.T) {
 	}
 	defer wal.Close()
 
-	if err := wal.Replay(func([]byte) error { return nil }); err != nil {
+	stats, err := wal.Replay(func([]byte) error { return nil })
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !stats.TailRepaired {
+		t.Fatal("expected replay to repair the truncated WAL tail")
 	}
 
 	if size, err := wal.Size(); err != nil || size != 0 {
@@ -343,7 +347,7 @@ func TestWALReplayRejectsChecksumMismatch(t *testing.T) {
 	}
 	defer wal.Close()
 
-	err = wal.Replay(func([]byte) error { return nil })
+	_, err = wal.Replay(func([]byte) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("replay error = %v, want checksum mismatch", err)
 	}

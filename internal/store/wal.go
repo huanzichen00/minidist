@@ -28,6 +28,12 @@ type WAL struct {
 	hasHeader bool
 }
 
+// ReplayStats 记录 WAL 回放结果。
+type ReplayStats struct {
+	Records      int
+	TailRepaired bool
+}
+
 func OpenWAL(path string) (*WAL, error) {
 	// O_CREATE:
 	//   文件不存在时自动创建。
@@ -96,9 +102,11 @@ func (w *WAL) Append(data []byte) error {
 
 // Replay 从头扫描 WAL，把每条完整记录交给 apply 处理
 // 用于进程启动时恢复内存状态
-func (w *WAL) Replay(apply func([]byte) error) error {
+func (w *WAL) Replay(apply func([]byte) error) (ReplayStats, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	var stats ReplayStats
 
 	validOffset := int64(0)
 	if w.hasHeader {
@@ -106,7 +114,7 @@ func (w *WAL) Replay(apply func([]byte) error) error {
 	}
 
 	if _, err := w.file.Seek(validOffset, io.SeekStart); err != nil {
-		return err
+		return stats, err
 	}
 
 	for {
@@ -115,27 +123,37 @@ func (w *WAL) Replay(apply func([]byte) error) error {
 			break
 		}
 		if err == io.ErrUnexpectedEOF {
-			return w.repairTail(validOffset)
+			if err := w.repairTail(validOffset); err != nil {
+				return stats, err
+			}
+
+			stats.TailRepaired = true
+			return stats, nil
 		}
 		if err != nil {
-			return err
+			return stats, err
 		}
 
 		if err := apply(data); err != nil {
-			return err
+			return stats, err
 		}
+
+		stats.Records++
 
 		offset, err := w.file.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return err
+			return stats, err
 		}
 
 		validOffset = offset
 	}
 
 	// 文件偏移移到末尾
-	_, err := w.file.Seek(0, io.SeekEnd)
-	return err
+	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+		return stats, err
+	}
+
+	return stats, nil
 }
 
 func (w *WAL) Close() error {
