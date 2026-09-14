@@ -188,7 +188,7 @@ func (w *WAL) Truncate() error {
 		return err
 	}
 
-	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
 
