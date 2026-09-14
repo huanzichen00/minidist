@@ -14,8 +14,8 @@ type ChunkInfo struct {
 	Size int
 }
 
-// WriteFromHeader 从数据流中按固定大小拆 chunk，并写入 store。
-func (s *Store) WriteFromHeader(r io.Reader, chunkSize int) ([]ChunkInfo, error) {
+// WriteFromReader 从数据流中按固定大小拆 chunk，并写入 store。
+func (s *Store) WriteFromReader(r io.Reader, chunkSize int) ([]ChunkInfo, error) {
 	if chunkSize <= 0 {
 		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)
 	}

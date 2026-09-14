@@ -123,14 +123,14 @@ func TestStoreDeleteIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestStoreWriteFromHeaderSplitsFinalChunk 验证数据流会保留最后的不完整 chunk。
-func TestStoreWriteFromHeaderSplitsFinalChunk(t *testing.T) {
+// TestStoreWriteFromReaderSplitsFinalChunk 验证数据流会保留最后的不完整 chunk。
+func TestStoreWriteFromReaderSplitsFinalChunk(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	chunks, err := store.WriteFromHeader(strings.NewReader("0123456789"), 4)
+	chunks, err := store.WriteFromReader(strings.NewReader("0123456789"), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +147,18 @@ func TestStoreWriteFromHeaderSplitsFinalChunk(t *testing.T) {
 		if string(data) != want[i] || chunk.Size != len(want[i]) {
 			t.Fatalf("chunk %d = %q (%d bytes), want %q (%d bytes)", i, data, chunk.Size, want[i], len(want[i]))
 		}
+	}
+}
+
+// TestStoreWriteFromReaderRejectsInvalidSize 验证非法 chunk 大小会失败。
+func TestStoreWriteFromReaderRejectsInvalidSize(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.WriteFromReader(strings.NewReader("data"), 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid chunk size") {
+		t.Fatalf("write error = %v, want invalid chunk size", err)
 	}
 }
