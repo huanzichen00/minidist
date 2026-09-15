@@ -18,11 +18,13 @@ type removeMemberAdminRequest struct {
 	Member string `json:"member"`
 }
 
+// ClusterConfig 是带版本号的完整成员配置。
 type ClusterConfig struct {
 	Version uint64   `json:"version"`
 	Members []string `json:"members"`
 }
 
+// AddMember 同步新成员配置并触发全体 rebalance。
 func (n *Node) AddMember(ctx context.Context, member string) error {
 	n.configMu.Lock()
 	defer n.configMu.Unlock()
@@ -49,6 +51,7 @@ func (n *Node) AddMember(ctx context.Context, member string) error {
 	return n.applyClusterConfig(ctx, allMembers, previous, next)
 }
 
+// sendMembershipSync 向目标节点发送完整成员配置。
 func (n *Node) sendMembershipSync(ctx context.Context, target string, config ClusterConfig) error {
 	payload, err := json.Marshal(config)
 
@@ -78,6 +81,7 @@ func (n *Node) sendMembershipSync(ctx context.Context, target string, config Clu
 	return nil
 }
 
+// RemoveMember 先 drain 待移除节点，再同步新成员配置。
 func (n *Node) RemoveMember(ctx context.Context, member string) error {
 	n.configMu.Lock()
 	defer n.configMu.Unlock()
@@ -112,6 +116,7 @@ func (n *Node) RemoveMember(ctx context.Context, member string) error {
 	return n.applyClusterConfig(ctx, futureMembers, previous, next)
 }
 
+// applyClusterConfig 同步配置并请求目标节点执行 rebalance。
 func (n *Node) applyClusterConfig(
 	ctx context.Context,
 	targets []string,
@@ -139,6 +144,7 @@ func (n *Node) applyClusterConfig(
 	return nil
 }
 
+// compensateClusterConfig 尽力把已应用的节点回滚到旧配置。
 func (n *Node) compensateClusterConfig(
 	ctx context.Context,
 	targets []string,
@@ -161,6 +167,7 @@ func (n *Node) compensateClusterConfig(
 	}
 }
 
+// removeMember 返回移除指定成员后的成员列表。
 func removeMember(members []string, member string) []string {
 	result := make([]string, 0, len(members)-1)
 

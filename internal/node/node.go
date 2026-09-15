@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// Node 是协调 quorum、成员状态和本地存储的集群节点。
 type Node struct {
 	addr string
 
@@ -35,6 +36,7 @@ type Node struct {
 	fd *failureDetector
 }
 
+// New 使用地址、初始成员和 WAL 路径创建节点。
 func New(addr string, nodes []string, walPath string) (*Node, error) {
 	memory, err := store.OpenMemory(walPath, walPath+".snapshot")
 	if err != nil {
@@ -63,10 +65,12 @@ func New(addr string, nodes []string, walPath string) (*Node, error) {
 	return n, nil
 }
 
+// Close 关闭节点持有的本地存储。
 func (n *Node) Close() error {
 	return n.store.Close()
 }
 
+// SaveSnapshot 请求本地存储立即保存快照。
 func (n *Node) SaveSnapshot() error {
 	return n.store.SaveSnapshot()
 }

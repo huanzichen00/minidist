@@ -12,6 +12,7 @@ type backgroundTask struct {
 	run      func(context.Context)
 }
 
+// runPeriodicTask 按固定间隔运行任务并隔离任务 panic。
 func (n *Node) runPeriodicTask(
 	ctx context.Context,
 	name string,
@@ -38,6 +39,7 @@ func (n *Node) runPeriodicTask(
 	}
 }
 
+// RunBackground 启动 hint、探测和 gossip 后台任务。
 func (n *Node) RunBackground(ctx context.Context) {
 	tasks := []backgroundTask{
 		{

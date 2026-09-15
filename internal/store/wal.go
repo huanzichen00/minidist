@@ -17,7 +17,7 @@ const (
 	maxWALRecordSize uint32 = 16 * 1024 * 1024
 )
 
-// Write-Ahead Log
+// WAL 是带 header 和校验和的预写日志。
 type WAL struct {
 	mu sync.Mutex
 
@@ -32,6 +32,7 @@ type ReplayStats struct {
 	TailRepaired bool
 }
 
+// OpenWAL 打开或创建 WAL，并校验已有 header。
 func OpenWAL(path string) (*WAL, error) {
 	// O_CREATE:
 	//   文件不存在时自动创建。
@@ -173,6 +174,7 @@ func (w *WAL) Replay(apply func([]byte) error) (ReplayStats, error) {
 	return stats, nil
 }
 
+// Close 关闭 WAL 文件。
 func (w *WAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -180,6 +182,7 @@ func (w *WAL) Close() error {
 	return w.file.Close()
 }
 
+// Truncate 清空所有记录并保留 WAL header。
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -195,6 +198,7 @@ func (w *WAL) Truncate() error {
 	return w.file.Sync()
 }
 
+// Size 返回 WAL 记录占用的字节数，不包含 header。
 func (w *WAL) Size() (int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -212,6 +216,7 @@ func (w *WAL) Size() (int64, error) {
 	return size, nil
 }
 
+// repairTail 截断不完整的 WAL 尾部。
 func (w *WAL) repairTail(validOffset int64) error {
 	if err := w.file.Truncate(validOffset); err != nil {
 		return err
@@ -225,6 +230,7 @@ func (w *WAL) repairTail(validOffset int64) error {
 	return err
 }
 
+// writeWALHeader 写入当前版本的 WAL header。
 func writeWALHeader(file *os.File) error {
 	var header [walHeaderSize]byte
 
@@ -238,6 +244,7 @@ func writeWALHeader(file *os.File) error {
 	return file.Sync()
 }
 
+// validateWALHeader 校验 WAL header 的 magic 和版本。
 func validateWALHeader(file *os.File) error {
 	var header [walHeaderSize]byte
 

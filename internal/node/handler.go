@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// Handler 注册节点对外、内部和管理 HTTP 路由。
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -27,6 +28,7 @@ func (n *Node) Handler() http.Handler {
 	return mux
 }
 
+// handleKV 分发对外 KV 的读写删除请求。
 func (n *Node) handleKV(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/kv/")
 	if key == "" {
@@ -49,6 +51,7 @@ func (n *Node) handleKV(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleInternalKV 分发副本间的内部 KV 请求。
 func (n *Node) handleInternalKV(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/internal/kv/")
 	if key == "" {
@@ -66,6 +69,7 @@ func (n *Node) handleInternalKV(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleInternalGet 返回本地单副本值。
 func (n *Node) handleInternalGet(w http.ResponseWriter, key string) {
 	value, ok := n.store.Get(key)
 	if !ok {
@@ -81,6 +85,7 @@ func (n *Node) handleInternalGet(w http.ResponseWriter, key string) {
 	}
 }
 
+// handleInternalPut 写入本地单副本值。
 func (n *Node) handleInternalPut(w http.ResponseWriter, r *http.Request, key string) {
 	var value store.Value
 	if err := json.NewDecoder(r.Body).Decode(&value); err != nil {
@@ -95,6 +100,7 @@ func (n *Node) handleInternalPut(w http.ResponseWriter, r *http.Request, key str
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePing 响应直接健康探测。
 func (n *Node) handlePing(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -104,6 +110,7 @@ func (n *Node) handlePing(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePingRequest 代替请求方探测目标节点。
 func (n *Node) handlePingRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -130,6 +137,7 @@ func (n *Node) handlePingRequest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleGossip 合并属于当前 ring 的远端状态。
 func (n *Node) handleGossip(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -156,6 +164,7 @@ func (n *Node) handleGossip(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleMembershipSync 应用版本更新的完整成员配置。
 func (n *Node) handleMembershipSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -197,6 +206,7 @@ func (n *Node) handleMembershipSync(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRebalance 执行本地数据重平衡。
 func (n *Node) handleRebalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -212,6 +222,7 @@ func (n *Node) handleRebalance(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleAdminMember 分发管理员成员增删请求。
 func (n *Node) handleAdminMember(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
@@ -225,6 +236,7 @@ func (n *Node) handleAdminMember(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleAdminAddMember 校验并添加成员。
 func (n *Node) handleAdminAddMember(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -250,6 +262,7 @@ func (n *Node) handleAdminAddMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleAdminRemoveMember 校验并移除成员。
 func (n *Node) handleAdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 	var req removeMemberAdminRequest
 
@@ -271,6 +284,7 @@ func (n *Node) handleAdminRemoveMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleDrain 按未来成员配置迁移本地数据。
 func (n *Node) handleDrain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

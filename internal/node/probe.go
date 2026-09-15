@@ -14,6 +14,7 @@ type pingRequest struct {
 	Target string `json:"target"`
 }
 
+// pingNode 通过内部 ping 接口探测单个节点。
 func (n *Node) pingNode(ctx context.Context, addr string) error {
 	if addr == n.addr {
 		return nil
@@ -39,6 +40,7 @@ func (n *Node) pingNode(ctx context.Context, addr string) error {
 	return nil
 }
 
+// requestIndirectPing 请求辅助节点探测目标节点。
 func (n *Node) requestIndirectPing(ctx context.Context, helper string, target string) error {
 	payload, err := json.Marshal(pingRequest{
 		Target: target,
@@ -67,10 +69,12 @@ func (n *Node) requestIndirectPing(ctx context.Context, helper string, target st
 	return nil
 }
 
+// indirectHelpers 选择间接探测目标的辅助节点。
 func (n *Node) indirectHelpers(target string, limit int) []string {
 	return n.randomMembers(limit, target)
 }
 
+// indirectProbe 并发请求辅助节点探测目标节点。
 func (n *Node) indirectProbe(ctx context.Context, target string) bool {
 	helpers := n.indirectHelpers(target, 2)
 	if len(helpers) == 0 {
@@ -94,6 +98,7 @@ func (n *Node) indirectProbe(ctx context.Context, target string) bool {
 	return false
 }
 
+// probeOnce 对随机成员执行直接和间接探测。
 func (n *Node) probeOnce(ctx context.Context) {
 	target, ok := n.randomProbeTarget()
 	if !ok {
@@ -122,6 +127,7 @@ func (n *Node) probeOnce(ctx context.Context) {
 	n.fd.MarkFailure(target)
 }
 
+// randomProbeTarget 返回一个随机探测目标。
 func (n *Node) randomProbeTarget() (string, bool) {
 	targets := n.randomMembers(1)
 
@@ -132,6 +138,7 @@ func (n *Node) randomProbeTarget() (string, bool) {
 	return targets[0], true
 }
 
+// randomMembers 返回排除指定节点后的随机成员。
 func (n *Node) randomMembers(limit int, exclude ...string) []string {
 	members := n.fd.List()
 

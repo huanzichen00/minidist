@@ -12,6 +12,7 @@ type versionResult struct {
 	err     error
 }
 
+// nextVersion 从 quorum 读取最大版本后分配新的本地版本。
 func (n *Node) nextVersion(ctx context.Context, key string) (store.Version, error) {
 	replicas := n.replicasFor(key)
 

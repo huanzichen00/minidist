@@ -19,6 +19,7 @@ type gossipRequest struct {
 	Members []gossipMember `json:"members"`
 }
 
+// sendGossip 将本地故障探测状态发送给目标节点。
 func (n *Node) sendGossip(ctx context.Context, target string) error {
 	members := n.fd.GossipSnapshot()
 
@@ -52,10 +53,12 @@ func (n *Node) sendGossip(ctx context.Context, target string) error {
 	return nil
 }
 
+// gossipTargets 选择 gossip 的随机目标节点。
 func (n *Node) gossipTargets(limit int) []string {
 	return n.randomMembers(limit)
 }
 
+// gossipOnce 向随机成员发送一次 gossip。
 func (n *Node) gossipOnce(ctx context.Context) {
 	for _, target := range n.gossipTargets(2) {
 		if err := n.sendGossip(ctx, target); err != nil {

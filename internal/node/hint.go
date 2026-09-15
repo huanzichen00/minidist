@@ -18,16 +18,19 @@ type hintStore struct {
 	hints map[string]hint
 }
 
+// newHintStore 创建保存失败副本写入的 hint 存储。
 func newHintStore() *hintStore {
 	return &hintStore{
 		hints: make(map[string]hint),
 	}
 }
 
+// hintKey 构造副本和键唯一对应的 hint 标识。
 func hintKey(replica string, key string) string {
 	return fmt.Sprintf("%s|%s", replica, key)
 }
 
+// Add 仅在版本更新时保存副本写入 hint。
 func (h *hintStore) Add(replica string, key string, value store.Value) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -49,6 +52,7 @@ func (h *hintStore) Add(replica string, key string, value store.Value) {
 	}
 }
 
+// List 返回当前所有 hint 的快照。
 func (h *hintStore) List() []hint {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -61,6 +65,7 @@ func (h *hintStore) List() []hint {
 	return result
 }
 
+// RemoveIfMatch 仅在 hint 版本匹配时删除它。
 func (h *hintStore) RemoveIfMatch(replica string, key string, version store.Version) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -77,6 +82,7 @@ func (h *hintStore) RemoveIfMatch(replica string, key string, version store.Vers
 	delete(h.hints, k)
 }
 
+// flushHints 尝试向原目标副本重放所有 hint。
 func (n *Node) flushHints(ctx context.Context) {
 	hints := n.hints.List()
 

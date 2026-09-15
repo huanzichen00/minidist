@@ -16,6 +16,7 @@ type rebalanceResult struct {
 	Cleaned int `json:"cleaned"`
 }
 
+// rebalance 按当前 ring 复制副本并清理已失配的本地数据。
 func (n *Node) rebalance(ctx context.Context) rebalanceResult {
 	snapshot := n.store.Snapshot()
 
@@ -70,6 +71,7 @@ func (n *Node) rebalance(ctx context.Context) rebalanceResult {
 	return result
 }
 
+// sendRebalance 请求目标节点执行 rebalance。
 func (n *Node) sendRebalance(ctx context.Context, target string) (rebalanceResult, error) {
 	url := "http://" + target + "/internal/rebalance"
 

@@ -7,6 +7,7 @@ import (
 	"sync"
 )
 
+// Ring 是支持虚拟节点的一致性哈希环。
 type Ring struct {
 	mu sync.RWMutex
 
@@ -16,6 +17,7 @@ type Ring struct {
 	members      map[string]struct{}
 }
 
+// New 使用初始成员创建一致性哈希环。
 func New(nodes []string, virtualNodes int) *Ring {
 	r := &Ring{
 		virtualNodes: virtualNodes,
@@ -31,6 +33,7 @@ func New(nodes []string, virtualNodes int) *Ring {
 	return r
 }
 
+// Add 将真实节点及其虚拟节点加入哈希环。
 func (r *Ring) Add(node string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -54,6 +57,7 @@ func (r *Ring) Add(node string) {
 	})
 }
 
+// get 在已持锁的前提下返回 key 的首选节点。
 func (r *Ring) get(key string) (string, bool) {
 	if len(r.hashes) == 0 {
 		return "", false
@@ -74,6 +78,7 @@ func (r *Ring) get(key string) (string, bool) {
 	return r.nodes[r.hashes[idx]], true
 }
 
+// Get 返回负责 key 的首选节点。
 func (r *Ring) Get(key string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -81,6 +86,7 @@ func (r *Ring) Get(key string) (string, bool) {
 	return r.get(key)
 }
 
+// Members 返回按字典序排列的成员列表。
 func (r *Ring) Members() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -94,6 +100,7 @@ func (r *Ring) Members() []string {
 	return members
 }
 
+// GetN 沿哈希环顺时针返回最多 n 个不同副本节点。
 func (r *Ring) GetN(key string, n int) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -137,6 +144,7 @@ func (r *Ring) GetN(key string, n int) []string {
 	return result
 }
 
+// Remove 从哈希环中删除节点及其虚拟节点。
 func (r *Ring) Remove(node string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -169,6 +177,7 @@ func (r *Ring) Remove(node string) {
 	r.hashes = hashes
 }
 
+// hash 计算字符串的环定位哈希。
 func hash(s string) uint32 {
 	return crc32.ChecksumIEEE([]byte(s))
 }

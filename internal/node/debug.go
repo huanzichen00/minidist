@@ -24,6 +24,7 @@ type membersDebugResponse struct {
 	Health []memberDebugState `json:"health"`
 }
 
+// handleDebugKV 分发本地 KV 的调试读写请求。
 func (n *Node) handleDebugKV(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/internal/debug/kv/")
 	if key == "" {
@@ -41,6 +42,7 @@ func (n *Node) handleDebugKV(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleDebugGet 返回本地存储中的调试值。
 func (n *Node) handleDebugGet(w http.ResponseWriter, key string) {
 	value, ok := n.store.Get(key)
 	if !ok {
@@ -56,6 +58,7 @@ func (n *Node) handleDebugGet(w http.ResponseWriter, key string) {
 	}
 }
 
+// handleDebugPut 绕过版本检查写入本地调试值。
 func (n *Node) handleDebugPut(w http.ResponseWriter, r *http.Request, key string) {
 	var value store.Value
 	if err := json.NewDecoder(r.Body).Decode(&value); err != nil {
@@ -68,6 +71,7 @@ func (n *Node) handleDebugPut(w http.ResponseWriter, r *http.Request, key string
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleDebugHints 返回本地暂存的 hint。
 func (n *Node) handleDebugHints(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -82,6 +86,7 @@ func (n *Node) handleDebugHints(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleDebugMembers 返回成员配置和故障探测状态。
 func (n *Node) handleDebugMembers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
