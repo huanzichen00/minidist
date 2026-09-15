@@ -24,6 +24,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
 	mux.HandleFunc("/admin/members", n.handleAdminMember)
 	mux.HandleFunc("/internal/drain", n.handleDrain)
+	mux.HandleFunc("/objects/", n.hanldeObject)
 
 	return mux
 }
@@ -308,4 +309,47 @@ func (n *Node) handleDrain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *Node) handleObject(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/objects/")
+	if name == "" {
+		http.Error(w, "empty object name", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		n.handleObjectPut(w, r, name)
+	case http.MethodGet:
+		n.handleObjectGet(w, r, name)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (n *Node) handleObjectPut(w http.ResponseWriter, r *http.Request, name string) {
+	metadata, err := n.objects.Put(r.Context(), name, r.Body, chunk.DefaultChunkSize)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(metadata); err != nil {
+		return
+	}
+}
+
+func (n *Node) handleObjectGet(w http.ResponseWriter, r *http.Request, name string) {
+	found, err := n.objects.Get(r.Context(), name, w)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !found {
+		http.Error(w, "not found", http.StatusNotFound)
+	}
 }

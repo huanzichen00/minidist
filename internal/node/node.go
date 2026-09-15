@@ -1,7 +1,9 @@
 package node
 
 import (
+	"minidist/internal/chunk"
 	"minidist/internal/hashring"
+	"minidist/internal/object"
 	"minidist/internal/store"
 	"net/http"
 	"sync"
@@ -34,6 +36,8 @@ type Node struct {
 	hints *hintStore
 
 	fd *failureDetector
+
+	objects *object.Store
 }
 
 // New 使用地址、初始成员和 WAL 路径创建节点。
@@ -42,6 +46,13 @@ func New(addr string, nodes []string, walPath string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	chunkStore, err := chunk.Open(walPath + ".chunks")
+	if err != nil {
+		_ = memory.Close()
+		return nil, err
+	}
+
 	n := &Node{
 		addr:         addr,
 		ring:         hashring.New(nodes, 100),
@@ -61,6 +72,7 @@ func New(addr string, nodes []string, walPath string) (*Node, error) {
 	}
 
 	n.version.Store(memory.MaxVersionCounter())
+	n.objects = object.New(chunkStore, n)
 
 	return n, nil
 }
