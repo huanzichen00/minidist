@@ -13,6 +13,7 @@ type drainRequest struct {
 	FutureMembers []string `json:"future_members"`
 }
 
+// drain 将本地数据复制到未来成员配置的副本节点。
 func (n *Node) drain(ctx context.Context, futureMembers []string) error {
 	futureRing := hashring.New(futureMembers, n.virtualNodes)
 
@@ -31,6 +32,7 @@ func (n *Node) drain(ctx context.Context, futureMembers []string) error {
 	return nil
 }
 
+// sendDrain 请求待移除节点向未来成员配置迁移数据。
 func (n *Node) sendDrain(ctx context.Context, target string, futureMembers []string) error {
 	payload, err := json.Marshal(drainRequest{
 		FutureMembers: futureMembers,

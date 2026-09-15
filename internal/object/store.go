@@ -6,8 +6,16 @@ import (
 	"minidist/internal/chunk"
 )
 
+// MetadataStore 定义对象元数据的持久化接口。
+type MetadataStore interface {
+	Put(key string, value []byte) error
+	Get(key string) ([]byte, error)
+}
+
+// Store 使用 chunk store 保存对象内容。
 type Store struct {
-	chunks *chunk.Store
+	chunks   *chunk.Store
+	metadata MetadataStore
 }
 
 // New 创建 object store，并复用底层 chunk store。
@@ -56,10 +64,12 @@ func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
 		return fmt.Errorf("object writer is nil")
 	}
 
+	var written int64
+
 	for _, info := range metadata.Chunks {
 		data, err := s.chunks.Get(info.ID)
 		if err != nil {
-			return err
+			return fmt.Errorf("read chunk %s: %w", info.ID, err)
 		}
 
 		if len(data) != info.Size {
@@ -73,6 +83,12 @@ func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
 		if n != len(data) {
 			return io.ErrShortWrite
 		}
+
+		written += int64(n)
+	}
+
+	if written != metadata.Size {
+		return fmt.Errorf("object size mismatch: metadata=%d actual=%d", metadata.Size, written)
 	}
 
 	return nil

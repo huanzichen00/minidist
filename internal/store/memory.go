@@ -10,17 +10,20 @@ import (
 
 const defaultSnapshotThreshold int64 = 64 * 1024 * 1024
 
+// Version 是值的逻辑版本，由计数器和节点 ID 组成。
 type Version struct {
 	Counter uint64 `json:"counter"`
 	NodeID  string `json:"node_id"`
 }
 
+// Value 是带版本和删除标记的 KV 值。
 type Value struct {
 	Data    []byte  `json:"data"`
 	Version Version `json:"version"`
 	Deleted bool    `json:"deleted"`
 }
 
+// Memory 是带 WAL 和 snapshot 持久化的内存 KV 存储。
 type Memory struct {
 	mu   sync.RWMutex
 	data map[string]Value
@@ -48,12 +51,14 @@ type kvWALEntry struct {
 	Version Version `json:"version"`
 }
 
+// NewMemory 创建不启用持久化的内存存储。
 func NewMemory() *Memory {
 	return &Memory{
 		data: make(map[string]Value),
 	}
 }
 
+// Set 仅在 value 版本更新时写入键值。
 func (m *Memory) Set(key string, value Value) error {
 	m.mu.Lock()
 
@@ -99,6 +104,7 @@ func (m *Memory) Set(key string, value Value) error {
 	return nil
 }
 
+// ForceSet 忽略版本比较，直接写入键值。
 func (m *Memory) ForceSet(key string, value Value) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -110,6 +116,7 @@ func (m *Memory) ForceSet(key string, value Value) {
 	}
 }
 
+// forceDelete 直接从内存中删除键。
 func (m *Memory) forceDelete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,6 +124,7 @@ func (m *Memory) forceDelete(key string) {
 	delete(m.data, key)
 }
 
+// Get 返回键对应的值及其是否存在。
 func (m *Memory) Get(key string) (Value, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -125,6 +133,7 @@ func (m *Memory) Get(key string) (Value, bool) {
 	return value, ok
 }
 
+// CompareVersion 按 Counter、NodeID 顺序比较两个版本。
 func CompareVersion(a, b Version) int {
 	if a.Counter < b.Counter {
 		return -1
@@ -145,6 +154,7 @@ func CompareVersion(a, b Version) int {
 	return 0
 }
 
+// Snapshot 返回当前数据的浅拷贝。
 func (m *Memory) Snapshot() map[string]Value {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -156,6 +166,7 @@ func (m *Memory) Snapshot() map[string]Value {
 	return result
 }
 
+// DeleteIfMatch 仅在当前版本匹配时删除键。
 func (m *Memory) DeleteIfMatch(key string, version Version) (bool, error) {
 	m.mu.Lock()
 
@@ -199,6 +210,7 @@ func (m *Memory) DeleteIfMatch(key string, version Version) (bool, error) {
 	return true, nil
 }
 
+// OpenMemory 从 snapshot 和 WAL 恢复持久化内存存储。
 func OpenMemory(path string, snapshotPath string) (*Memory, error) {
 	snapshot, err := loadSnapshot(snapshotPath)
 	if err != nil {
@@ -255,6 +267,7 @@ func OpenMemory(path string, snapshotPath string) (*Memory, error) {
 	return m, nil
 }
 
+// MaxVersionCounter 返回已见到的最大版本计数器。
 func (m *Memory) MaxVersionCounter() uint64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -262,6 +275,7 @@ func (m *Memory) MaxVersionCounter() uint64 {
 	return m.maxVersionCounter
 }
 
+// Close 关闭底层 WAL 文件。
 func (m *Memory) Close() error {
 	if m.wal == nil {
 		return nil
@@ -270,6 +284,7 @@ func (m *Memory) Close() error {
 	return m.wal.Close()
 }
 
+// saveSnapshot 保存当前内存状态并截断 WAL。
 func (m *Memory) saveSnapshot() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -292,6 +307,7 @@ func (m *Memory) saveSnapshot() error {
 	return nil
 }
 
+// MaybeSnapshot 在 WAL 达到阈值时保存快照。
 func (m *Memory) MaybeSnapshot() error {
 	if m.wal == nil {
 		return nil
@@ -314,6 +330,7 @@ func (m *Memory) MaybeSnapshot() error {
 	return m.saveSnapshot()
 }
 
+// SaveSnapshot 立即保存快照并截断 WAL。
 func (m *Memory) SaveSnapshot() error {
 	m.snapshotMu.Lock()
 	defer m.snapshotMu.Unlock()
@@ -321,6 +338,7 @@ func (m *Memory) SaveSnapshot() error {
 	return m.saveSnapshot()
 }
 
+// WALSize 返回 WAL 中记录占用的字节数。
 func (m *Memory) WALSize() (int64, error) {
 	if m.wal == nil {
 		return 0, nil

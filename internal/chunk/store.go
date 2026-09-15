@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 )
 
+// ErrNotFound 表示指定 chunk 不存在。
 var ErrNotFound = errors.New("chunk not found")
 
+// Store 是按内容寻址保存 chunk 的本地存储。
 type Store struct {
 	root string
 }

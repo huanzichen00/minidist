@@ -25,6 +25,7 @@ type readResult struct {
 	err     error
 }
 
+// newer 判断 a 的版本是否严格新于 b。
 func newer(a, b store.Value) bool {
 	return store.CompareVersion(
 		a.Version,
@@ -32,86 +33,22 @@ func newer(a, b store.Value) bool {
 	) > 0
 }
 
+// handleReplicatedGet 是 HTTP 请求翻译层，将 GET 请求映射为 quorum 读取和读修复。
 func (n *Node) handleReplicatedGet(w http.ResponseWriter, r *http.Request, key string) {
-	replicas := n.replicasFor(key)
-
-	if len(replicas) == 0 {
-		http.Error(w, "no replicas", http.StatusServiceUnavailable)
+	data, found, err := n.Get(r.Context(), key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-
-	results := make(chan readResult, len(replicas))
-	for _, replica := range replicas {
-		go func(replica string) {
-			value, found, err := n.getReplica(r.Context(), replica, key)
-			results <- readResult{
-				replica: replica,
-				value:   value,
-				found:   found,
-				err:     err,
-			}
-		}(replica)
-	}
-
-	// 现在得到的成功结果里，版本最新的那个
-	var latest store.Value
-	// latest 是否有实际内容，防止传回空值
-	hasValue := false
-	success := 0
-	successful := make([]readResult, 0, len(replicas))
-
-	for range replicas {
-		result := <-results
-
-		if result.err != nil {
-			continue
-		}
-
-		// 请求本身成功，不管有木有 key，
-		// 都算 replica 请求成功
-		success++
-
-		successful = append(successful, result)
-
-		if !result.found {
-			continue
-		}
-
-		if !hasValue || newer(result.value, latest) {
-			latest = result.value
-			hasValue = true
-		}
-	}
-
-	if success < n.readQuorum {
-		http.Error(w, "read quorum not reached", http.StatusServiceUnavailable)
-		return
-	}
-
-	if !hasValue {
+	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
-	for _, result := range successful {
-		if !result.found {
-			n.repairReplica(r.Context(), result.replica, key, latest)
-			continue
-		}
-
-		if newer(latest, result.value) {
-			n.repairReplica(r.Context(), result.replica, key, latest)
-		}
-	}
-
-	if latest.Deleted {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	_, _ = w.Write(latest.Data)
+	_, _ = w.Write(data)
 }
 
+// replicateValue 并发写入所有副本，并为失败副本保存 hint。
 func (n *Node) replicateValue(ctx context.Context, key string, value store.Value) bool {
 	replicas := n.replicasFor(key)
 
@@ -141,6 +78,7 @@ func (n *Node) replicateValue(ctx context.Context, key string, value store.Value
 	return success >= n.writeQuorum
 }
 
+// handleReplicatedPut 是 HTTP 请求翻译层，将 PUT 请求映射为 quorum 写入。
 func (n *Node) handleReplicatedPut(w http.ResponseWriter, r *http.Request, key string) {
 	// 先把请求读到内存，防止后续读 EOF
 	data, err := io.ReadAll(r.Body)
@@ -149,22 +87,15 @@ func (n *Node) handleReplicatedPut(w http.ResponseWriter, r *http.Request, key s
 		return
 	}
 
-	version, err := n.nextVersion(r.Context(), key)
-	if err != nil {
+	if err := n.Put(r.Context(), key, data); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-
-	value := store.Value{Data: data, Version: version}
-
-	if !n.replicateValue(r.Context(), key, value) {
-		http.Error(w, "write quorum not reached", http.StatusServiceUnavailable)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleReplicatedDelete 是 HTTP 请求翻译层，将 DELETE 请求映射为 tombstone quorum 写入。
 func (n *Node) handleReplicatedDelete(w http.ResponseWriter, r *http.Request, key string) {
 	version, err := n.nextVersion(r.Context(), key)
 	if err != nil {
@@ -185,6 +116,7 @@ func (n *Node) handleReplicatedDelete(w http.ResponseWriter, r *http.Request, ke
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// putReplica 写入本地或远端的单个副本。
 func (n *Node) putReplica(ctx context.Context, replica string, key string, value store.Value) error {
 	if replica == n.addr {
 		return n.store.Set(key, value)
@@ -214,6 +146,7 @@ func (n *Node) putReplica(ctx context.Context, replica string, key string, value
 	return nil
 }
 
+// repairReplica 尝试将最新值回写到落后副本。
 func (n *Node) repairReplica(ctx context.Context, replica string, key string, value store.Value) {
 	err := n.putReplica(ctx, replica, key, value)
 	if err != nil {
@@ -221,6 +154,7 @@ func (n *Node) repairReplica(ctx context.Context, replica string, key string, va
 	}
 }
 
+// getReplica 读取本地或远端的单个副本。
 func (n *Node) getReplica(ctx context.Context, replica string, key string) (store.Value, bool, error) {
 	if replica == n.addr {
 		value, ok := n.store.Get(key)
@@ -257,10 +191,101 @@ func (n *Node) getReplica(ctx context.Context, replica string, key string) (stor
 	return value, true, nil
 }
 
+// replicasFor 返回当前 ring 中负责 key 的副本。
 func (n *Node) replicasFor(key string) []string {
 	return n.replicasForRing(n.ring, key)
 }
 
+// replicasForRing 返回指定 ring 中负责 key 的副本。
 func (n *Node) replicasForRing(ring *hashring.Ring, key string) []string {
 	return ring.GetN(key, n.replicas)
+}
+
+// Put 分配新版本并执行 quorum 写入。
+func (n *Node) Put(ctx context.Context, key string, data []byte) error {
+	version, err := n.nextVersion(ctx, key)
+	if err != nil {
+		return err
+	}
+
+	value := store.Value{
+		Data:    data,
+		Version: version,
+	}
+
+	if !n.replicateValue(ctx, key, value) {
+		return fmt.Errorf("write quorum not reached")
+	}
+
+	return nil
+}
+
+// Get 执行 quorum 读取，选择最新版本并修复落后副本。
+func (n *Node) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	replicas := n.replicasFor(key)
+	if len(replicas) == 0 {
+		return nil, false, fmt.Errorf("no replicas")
+	}
+
+	results := make(chan readResult, len(replicas))
+
+	for _, replica := range replicas {
+		go func(replica string) {
+			value, found, err := n.getReplica(ctx, replica, key)
+			results <- readResult{
+				replica: replica,
+				value:   value,
+				found:   found,
+				err:     err,
+			}
+		}(replica)
+	}
+
+	// 从成功响应中选择版本最新的值。
+	var latest store.Value
+	// hasValue 表示是否存在任意副本值。
+	hasValue := false
+	success := 0
+	successful := make([]readResult, 0, len(replicas))
+
+	for range replicas {
+		result := <-results
+
+		if result.err != nil {
+			continue
+		}
+
+		// 请求本身成功时，无论 key 是否存在都计入 quorum。
+		success++
+		successful = append(successful, result)
+
+		if !result.found {
+			continue
+		}
+
+		if !hasValue || newer(result.value, latest) {
+			latest = result.value
+			hasValue = true
+		}
+	}
+
+	if success < n.readQuorum {
+		return nil, false, fmt.Errorf("read quorum not reached")
+	}
+
+	if !hasValue {
+		return nil, false, nil
+	}
+
+	for _, result := range successful {
+		if !result.found || newer(latest, result.value) {
+			n.repairReplica(ctx, result.replica, key, latest)
+		}
+	}
+
+	if latest.Deleted {
+		return nil, false, nil
+	}
+
+	return latest.Data, true, nil
 }

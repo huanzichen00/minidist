@@ -29,6 +29,7 @@ type failureDetector struct {
 	members map[string]memberState
 }
 
+// newFailureDetector 为初始成员创建故障探测器。
 func newFailureDetector(nodes []string, self string) *failureDetector {
 	fd := &failureDetector{
 		self:    self,
@@ -51,6 +52,7 @@ func newFailureDetector(nodes []string, self string) *failureDetector {
 	return fd
 }
 
+// MarkSuccess 记录节点探测成功并恢复 alive 状态。
 func (f *failureDetector) MarkSuccess(node string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -86,6 +88,7 @@ func (f *failureDetector) MarkFailure(node string) {
 	f.members[node] = state
 }
 
+// List 返回所有被追踪的节点。
 func (f *failureDetector) List() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -99,6 +102,7 @@ func (f *failureDetector) List() []string {
 	return result
 }
 
+// String 返回节点状态的字符串表示。
 func (s nodeStatus) String() string {
 	switch s {
 	case statusAlive:
@@ -112,6 +116,7 @@ func (s nodeStatus) String() string {
 	}
 }
 
+// parseNodeStatus 将字符串解析为节点状态。
 func parseNodeStatus(s string) nodeStatus {
 	switch s {
 	case "alive":
@@ -125,6 +130,7 @@ func parseNodeStatus(s string) nodeStatus {
 	}
 }
 
+// Snapshot 返回用于调试接口的成员状态快照。
 func (f *failureDetector) Snapshot() []memberDebugState {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -149,6 +155,7 @@ func (f *failureDetector) Snapshot() []memberDebugState {
 	return result
 }
 
+// GossipSnapshot 返回用于 gossip 的成员状态快照。
 func (f *failureDetector) GossipSnapshot() []gossipMember {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -166,6 +173,7 @@ func (f *failureDetector) GossipSnapshot() []gossipMember {
 	return result
 }
 
+// Merge 合并远端 gossip 成员状态。
 func (f *failureDetector) Merge(members []gossipMember) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -203,6 +211,7 @@ func (f *failureDetector) Merge(members []gossipMember) {
 	}
 }
 
+// newerMemberState 判断远端状态是否新于本地状态。
 func newerMemberState(remote gossipMember, local memberState) bool {
 	if remote.Incarnation > local.Incarnation {
 		return true
@@ -215,6 +224,7 @@ func newerMemberState(remote gossipMember, local memberState) bool {
 	return remote.Version > local.Version
 }
 
+// refuteSelf 提升自身 incarnation 并重新声明 alive。
 func (f *failureDetector) refuteSelf(remote gossipMember) {
 	local := f.members[f.self]
 	if remote.Incarnation < local.Incarnation {
@@ -230,6 +240,7 @@ func (f *failureDetector) refuteSelf(remote gossipMember) {
 	f.members[f.self] = local
 }
 
+// TrackMember 开始追踪新成员。
 func (f *failureDetector) TrackMember(node string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -244,6 +255,7 @@ func (f *failureDetector) TrackMember(node string) {
 	}
 }
 
+// UntrackMember 停止追踪已移除成员。
 func (fd *failureDetector) UntrackMember(member string) {
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
