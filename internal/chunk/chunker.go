@@ -10,11 +10,11 @@ const DefaultChunkSize = 4 * 1024 * 1024
 
 // ChunkInfo 描述一个已保存的 chunk。
 type ChunkInfo struct {
-	ID   string
-	Size int
+	ID   string `json:"id"`
+	Size int    `json:"size"`
 }
 
-// WriteFromReader 从数据流中按固定大小拆 chunk，并写入 store。
+// WriteFromReader 从数据流中按固定大小拆 chunk，并返回 chunk 信息。
 func (s *Store) WriteFromReader(r io.Reader, chunkSize int) ([]ChunkInfo, error) {
 	if chunkSize <= 0 {
 		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)
