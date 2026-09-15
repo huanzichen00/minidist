@@ -67,6 +67,7 @@ func (f *failureDetector) MarkSuccess(node string) {
 	f.members[node] = state
 }
 
+// MarkFailure 记录节点探测失败并更新 suspect/dead 状态。
 // 失败 1~2 次      -> suspect
 // 连续失败 >= 3 次 -> Dead
 func (f *failureDetector) MarkFailure(node string) {

@@ -17,7 +17,7 @@ type Ring struct {
 	members      map[string]struct{}
 }
 
-// New 使用初始成员创建一致性哈希环。
+// New 使用初始成员和每个成员的虚拟节点数创建一致性哈希环。
 func New(nodes []string, virtualNodes int) *Ring {
 	r := &Ring{
 		virtualNodes: virtualNodes,

@@ -14,7 +14,7 @@ type ChunkInfo struct {
 	Size int    `json:"size"`
 }
 
-// WriteFromReader 从数据流中按固定大小拆 chunk，并返回 chunk 信息。
+// WriteFromReader 从数据流中按 chunkSize 拆分并保存数据，返回 chunk 信息。
 func (s *Store) WriteFromReader(r io.Reader, chunkSize int) ([]ChunkInfo, error) {
 	if chunkSize <= 0 {
 		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)

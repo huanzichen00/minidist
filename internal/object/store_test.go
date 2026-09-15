@@ -2,10 +2,31 @@ package object
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"minidist/internal/chunk"
 	"testing"
 )
+
+type testMetadataStore struct {
+	values map[string][]byte
+}
+
+func (s *testMetadataStore) Put(_ context.Context, key string, value []byte) error {
+	if s.values == nil {
+		s.values = make(map[string][]byte)
+	}
+	s.values[key] = append([]byte(nil), value...)
+	return nil
+}
+
+func (s *testMetadataStore) Get(_ context.Context, key string) ([]byte, error) {
+	value, ok := s.values[key]
+	if !ok {
+		return nil, errors.New("metadata not found")
+	}
+	return append([]byte(nil), value...), nil
+}
 
 // TestStorePutAndWriteTo 验证对象写入后可由 metadata 重建。
 func TestStorePutAndWriteTo(t *testing.T) {
@@ -13,10 +34,12 @@ func TestStorePutAndWriteTo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := New(chunks)
+	metadataStore := &testMetadataStore{}
+	store := New(chunks, metadataStore)
 
 	data := []byte("0123456789")
-	metadata, err := store.Put("file.txt", bytes.NewReader(data), 4)
+	ctx := context.Background()
+	metadata, err := store.Put(ctx, "file.txt", bytes.NewReader(data), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,6 +48,9 @@ func TestStorePutAndWriteTo(t *testing.T) {
 	}
 	if len(metadata.Chunks) != 3 {
 		t.Fatalf("chunk count = %d, want 3", len(metadata.Chunks))
+	}
+	if _, err := metadataStore.Get(ctx, metadataKey("file.txt")); err != nil {
+		t.Fatalf("metadata was not persisted: %v", err)
 	}
 
 	var output bytes.Buffer
@@ -42,9 +68,9 @@ func TestStoreWriteToMissingChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := New(chunks)
+	store := New(chunks, &testMetadataStore{})
 
-	metadata, err := store.Put("file.txt", bytes.NewReader([]byte("data")), 4)
+	metadata, err := store.Put(context.Background(), "file.txt", bytes.NewReader([]byte("data")), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +91,7 @@ func TestStorePutRejectsNilReader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = New(chunks).Put("file.txt", nil, 4)
+	_, err = New(chunks, &testMetadataStore{}).Put(context.Background(), "file.txt", nil, 4)
 	if err == nil {
 		t.Fatal("expected nil reader error")
 	}

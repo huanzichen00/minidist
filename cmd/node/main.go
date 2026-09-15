@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// main 解析节点配置，启动后台任务和 HTTP 服务，并处理退出信号。
 func main() {
 	addr := flag.String(
 		"addr",

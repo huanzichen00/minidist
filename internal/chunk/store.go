@@ -17,7 +17,7 @@ type Store struct {
 	root string
 }
 
-// Open 打开本地 chunk store, 并确保根目录存在
+// Open 打开本地 chunk store，并确保根目录存在。
 func Open(root string) (*Store, error) {
 	if root == "" {
 		return nil, fmt.Errorf("chunk root is empty")
@@ -32,13 +32,13 @@ func Open(root string) (*Store, error) {
 	}, nil
 }
 
-// ID 根据 chunk 内容计算稳定的 SHA256 标识
+// ID 根据 chunk 内容计算稳定的 SHA-256 标识。
 func ID(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
 
-// Put 把 chunk 按内容寻址方式写入磁盘，并返回 chunk ID
+// Put 按内容寻址方式将 chunk 写入磁盘，并返回其 ID。
 func (s *Store) Put(data []byte) (string, error) {
 	id := ID(data)
 	path := s.path(id)
@@ -108,7 +108,7 @@ func (s *Store) Get(id string) ([]byte, error) {
 	return data, nil
 }
 
-// Delete 删除指定 chunk, chunk 不存在时视为成功
+// Delete 删除指定 chunk；chunk 不存在时视为成功。
 func (s *Store) Delete(id string) error {
 	if err := validateID(id); err != nil {
 		return err
@@ -122,7 +122,7 @@ func (s *Store) Delete(id string) error {
 	return err
 }
 
-// Exists 判断指定 chunk 是否已经存在
+// Exists 判断指定 chunk 是否已经存在。
 func (s *Store) Exists(id string) (bool, error) {
 	if err := validateID(id); err != nil {
 		return false, err

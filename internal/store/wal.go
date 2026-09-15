@@ -17,22 +17,23 @@ const (
 	maxWALRecordSize uint32 = 16 * 1024 * 1024
 )
 
-// WAL 是带 header 和校验和的预写日志。
+// Write-Ahead Log
 type WAL struct {
 	mu sync.Mutex
 
-	// 低层日志文件
+	// 底层日志文件
 	// WAL 所有记录都追加到这个文件结尾
 	file *os.File
+
+	hasHeader bool
 }
 
-// ReplayStats 记录 WAL 回放结果。
 type ReplayStats struct {
 	Records      int
 	TailRepaired bool
 }
 
-// OpenWAL 打开或创建 WAL，并校验已有 header。
+// OpenWAL 打开或创建指定路径的预写日志文件，并校验其文件头。
 func OpenWAL(path string) (*WAL, error) {
 	// O_CREATE:
 	//   文件不存在时自动创建。
@@ -54,9 +55,10 @@ func OpenWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 
-	if info.Size() > 0 && info.Size() < walHeaderSize {
+	hasHeader, err := detectWALHeader(file, info.Size())
+	if err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("wal header is incomplete")
+		return nil, err
 	}
 
 	if info.Size() == 0 {
@@ -64,17 +66,24 @@ func OpenWAL(path string) (*WAL, error) {
 			_ = file.Close()
 			return nil, err
 		}
-	} else if err := validateWALHeader(file); err != nil {
-		_ = file.Close()
-		return nil, err
+		hasHeader = true
 	}
 
 	return &WAL{
-		file: file,
+		file:      file,
+		hasHeader: hasHeader,
 	}, nil
 }
 
-// Append 向 WAL 追加一条带校验和的记录。
+// Append 向 WAL 中追加一条记录
+// 格式:
+// 4 bytes length
+// N bytes payload
+// e.g. [00 00 00 05][hello]
+//
+//	       ^
+//	       |
+//	payload 长度为 5
 func (w *WAL) Append(data []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -83,13 +92,7 @@ func (w *WAL) Append(data []byte) error {
 		return fmt.Errorf("wal record too large: %d bytes", len(data))
 	}
 
-	var header [8]byte
-	binary.BigEndian.PutUint32(header[0:4], uint32(len(data)))
-	binary.BigEndian.PutUint32(header[4:8], crc32.ChecksumIEEE(data))
-	if _, err := w.file.Write(header[:]); err != nil {
-		return err
-	}
-	if _, err := w.file.Write(data); err != nil {
+	if err := w.writeRecord(data); err != nil {
 		return err
 	}
 
@@ -105,15 +108,17 @@ func (w *WAL) Replay(apply func([]byte) error) (ReplayStats, error) {
 
 	var stats ReplayStats
 
-	validOffset := int64(walHeaderSize)
+	validOffset := int64(0)
+	if w.hasHeader {
+		validOffset = walHeaderSize
+	}
 
 	if _, err := w.file.Seek(validOffset, io.SeekStart); err != nil {
 		return stats, err
 	}
 
 	for {
-		var header [8]byte
-		_, err := io.ReadFull(w.file, header[:])
+		data, err := w.readRecord()
 		if err == io.EOF {
 			break
 		}
@@ -127,29 +132,6 @@ func (w *WAL) Replay(apply func([]byte) error) (ReplayStats, error) {
 		}
 		if err != nil {
 			return stats, err
-		}
-
-		length := binary.BigEndian.Uint32(header[0:4])
-		if length > maxWALRecordSize {
-			return stats, fmt.Errorf("wal record too large: %d bytes", length)
-		}
-
-		data := make([]byte, length)
-		if _, err := io.ReadFull(w.file, data); err != nil {
-			if err == io.ErrUnexpectedEOF {
-				if err := w.repairTail(validOffset); err != nil {
-					return stats, err
-				}
-
-				stats.TailRepaired = true
-				return stats, nil
-			}
-			return stats, err
-		}
-
-		expectedChecksum := binary.BigEndian.Uint32(header[4:8])
-		if actualChecksum := crc32.ChecksumIEEE(data); actualChecksum != expectedChecksum {
-			return stats, fmt.Errorf("wal checksum mismatch: expected %08x, got %08x", expectedChecksum, actualChecksum)
 		}
 
 		if err := apply(data); err != nil {
@@ -174,7 +156,7 @@ func (w *WAL) Replay(apply func([]byte) error) (ReplayStats, error) {
 	return stats, nil
 }
 
-// Close 关闭 WAL 文件。
+// Close 关闭 WAL 底层文件。
 func (w *WAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -182,23 +164,27 @@ func (w *WAL) Close() error {
 	return w.file.Close()
 }
 
-// Truncate 清空所有记录并保留 WAL header。
+// Truncate 清空 WAL，并重新写入当前版本的文件头。
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := w.file.Truncate(walHeaderSize); err != nil {
+	if err := w.file.Truncate(0); err != nil {
 		return err
 	}
 
-	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+	if err := writeWALHeader(w.file); err != nil {
+		return err
+	}
+	w.hasHeader = true
 
 	return w.file.Sync()
 }
 
-// Size 返回 WAL 记录占用的字节数，不包含 header。
+// Size 返回 WAL 记录区占用的字节数，不包含文件头。
 func (w *WAL) Size() (int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -208,7 +194,10 @@ func (w *WAL) Size() (int64, error) {
 		return 0, err
 	}
 
-	size := info.Size() - walHeaderSize
+	size := info.Size()
+	if w.hasHeader {
+		size -= walHeaderSize
+	}
 	if size < 0 {
 		return 0, nil
 	}
@@ -216,7 +205,7 @@ func (w *WAL) Size() (int64, error) {
 	return size, nil
 }
 
-// repairTail 截断不完整的 WAL 尾部。
+// repairTail 将损坏或不完整的日志尾部截断到最后一个有效偏移。
 func (w *WAL) repairTail(validOffset int64) error {
 	if err := w.file.Truncate(validOffset); err != nil {
 		return err
@@ -230,7 +219,7 @@ func (w *WAL) repairTail(validOffset int64) error {
 	return err
 }
 
-// writeWALHeader 写入当前版本的 WAL header。
+// writeWALHeader 向文件起始位置写入 WAL 文件头。
 func writeWALHeader(file *os.File) error {
 	var header [walHeaderSize]byte
 
@@ -244,7 +233,32 @@ func writeWALHeader(file *os.File) error {
 	return file.Sync()
 }
 
-// validateWALHeader 校验 WAL header 的 magic 和版本。
+// detectWALHeader 检查文件是否包含受支持的 WAL 文件头。
+func detectWALHeader(file *os.File, size int64) (bool, error) {
+	if size == 0 {
+		return false, nil
+	}
+	if size < walHeaderSize {
+		return false, fmt.Errorf("wal header is incomplete")
+	}
+
+	var magicBytes [4]byte
+	if _, err := file.ReadAt(magicBytes[:], 0); err != nil {
+		return false, err
+	}
+
+	if binary.BigEndian.Uint32(magicBytes[:]) != walMagic {
+		return false, nil
+	}
+
+	if size < walHeaderSize {
+		return false, fmt.Errorf("wal header is incomplete")
+	}
+
+	return true, validateWALHeader(file)
+}
+
+// validateWALHeader 校验 WAL 文件头中的魔数和版本。
 func validateWALHeader(file *os.File) error {
 	var header [walHeaderSize]byte
 
@@ -263,4 +277,59 @@ func validateWALHeader(file *os.File) error {
 	}
 
 	return nil
+}
+
+// writeRecord 将一条数据记录编码并追加到当前文件偏移处。
+func (w *WAL) writeRecord(data []byte) error {
+	if w.hasHeader {
+		var header [8]byte
+		binary.BigEndian.PutUint32(header[0:4], uint32(len(data)))
+		binary.BigEndian.PutUint32(header[4:8], crc32.ChecksumIEEE(data))
+		if _, err := w.file.Write(header[:]); err != nil {
+			return err
+		}
+	} else {
+		var header [4]byte
+		binary.BigEndian.PutUint32(header[:], uint32(len(data)))
+		if _, err := w.file.Write(header[:]); err != nil {
+			return err
+		}
+	}
+
+	_, err := w.file.Write(data)
+	return err
+}
+
+// readRecord 从当前文件偏移读取并校验一条完整记录。
+func (w *WAL) readRecord() ([]byte, error) {
+	headerSize := 4
+	if w.hasHeader {
+		headerSize = 8
+	}
+
+	header := make([]byte, headerSize)
+	if _, err := io.ReadFull(w.file, header); err != nil {
+		return nil, err
+	}
+
+	length := binary.BigEndian.Uint32(header[0:4])
+	if length > maxWALRecordSize {
+		return nil, fmt.Errorf("wal record too large: %d bytes", length)
+	}
+
+	data := make([]byte, length)
+	if _, err := io.ReadFull(w.file, data); err != nil {
+		return nil, err
+	}
+
+	if w.hasHeader {
+		expectedChecksum := binary.BigEndian.Uint32(header[4:8])
+		actualChecksum := crc32.ChecksumIEEE(data)
+		if actualChecksum != expectedChecksum {
+			return nil, fmt.Errorf("wal checksum mismatch: expected %08x, got %08x",
+				expectedChecksum, actualChecksum)
+		}
+	}
+
+	return data, nil
 }
