@@ -13,7 +13,7 @@ import (
 // MetadataStore 定义对象元数据的持久化接口。
 type MetadataStore interface {
 	Put(ctx context.Context, key string, value []byte) error
-	Get(ctx context.Context, key string) ([]byte, error)
+	Get(ctx context.Context, key string) ([]byte, bool, error)
 }
 
 // Store 使用 chunk store 保存对象内容。
@@ -117,4 +117,41 @@ func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
 func metadataKey(name string) string {
 	sum := sha256.Sum256([]byte(name))
 	return "object:meta:" + hex.EncodeToString(sum[:])
+}
+
+func (s *Store) Metadata(ctx context.Context, name string) (Metadata, bool, error) {
+	if s == nil || s.metadata == nil {
+		return Metadata{}, false, fmt.Errorf("metadata store is nil")
+	}
+
+	data, found, err := s.metadata.Get(ctx, metadataKey(name))
+	if err != nil {
+		return Metadata{}, false, err
+	}
+	if !found {
+		return Metadata{}, false, nil
+	}
+
+	var metadata Metadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return Metadata{}, false, fmt.Errorf("decode metadata: %w", err)
+	}
+
+	return metadata, true, nil
+}
+
+func (s *Store) Get(ctx context.Context, name string, w io.Writer) (bool, error) {
+	metadata, found, err := s.Metadata(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
+	if err := s.WriteTo(metadata, w); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
