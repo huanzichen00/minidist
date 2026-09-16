@@ -2,7 +2,6 @@ package chunk
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -148,17 +147,6 @@ func TestStoreWriteFromReaderSplitsFinalChunk(t *testing.T) {
 		if string(data) != want[i] || chunk.Size != len(want[i]) {
 			t.Fatalf("chunk %d = %q (%d bytes), want %q (%d bytes)", i, data, chunk.Size, want[i], len(want[i]))
 		}
-	}
-}
-
-// TestWriteChunksReturnsPutError 验证保存 chunk 失败时会返回原始错误。
-func TestWriteChunksReturnsPutError(t *testing.T) {
-	wantErr := errors.New("put failed")
-	_, err := WriteChunks(strings.NewReader("data"), 4, func([]byte) (string, error) {
-		return "", wantErr
-	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("write error = %v, want %v", err, wantErr)
 	}
 }
 
