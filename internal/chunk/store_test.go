@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -80,6 +81,69 @@ func TestStorePutSameDataReturnsSameID(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("second chunk ID = %q, want %q", second, first)
+	}
+}
+
+// TestStoreConcurrentPutSameData 验证多个 goroutine 并发写入相同 chunk 不会争用临时文件。
+func TestStoreConcurrentPutSameData(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := bytes.Repeat([]byte("concurrent chunk data"), 4096)
+	wantID := ID(data)
+
+	const writers = 32
+	start := make(chan struct{})
+	ids := make(chan string, writers)
+	errs := make(chan error, writers)
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+
+			id, err := store.Put(data)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(ids)
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("concurrent put failed: %v", err)
+	}
+	for id := range ids {
+		if id != wantID {
+			t.Errorf("chunk ID = %q, want %q", id, wantID)
+		}
+	}
+
+	got, err := store.Get(wantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("stored chunk data mismatch")
+	}
+
+	storedIDs, err := store.IDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedIDs) != 1 || storedIDs[0] != wantID {
+		t.Fatalf("stored IDs = %v, want [%s]", storedIDs, wantID)
 	}
 }
 
