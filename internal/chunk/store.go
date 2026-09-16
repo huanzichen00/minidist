@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // ErrNotFound 表示指定 chunk 不存在。
@@ -155,4 +156,37 @@ func validateID(id string) error {
 	}
 
 	return nil
+}
+
+// IDs 返回当前节点底层保存的所有合法 chunk ID
+func (s *Store) IDs() ([]string, error) {
+	var ids []string
+
+	err := filepath.WalkDir(s.root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if entry.IsDir() {
+			return nil
+		}
+
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+
+		id := entry.Name()
+		if err := validateID(id); err != nil {
+			return nil
+		}
+
+		ids = append(ids, id)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Strings(ids)
+	return ids, nil
 }

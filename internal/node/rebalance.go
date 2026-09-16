@@ -14,6 +14,10 @@ type rebalanceResult struct {
 	Failed  int `json:"failed"`
 	Hinted  int `json:"hinted"`
 	Cleaned int `json:"cleaned"`
+
+	ChunkScanned int `json:"chunk_scanned"`
+	ChunkCopied  int `json:"chunk_copied"`
+	ChunkFailed  int `json:"chunk_failed"`
 }
 
 // rebalance 按当前 ring 复制副本并清理已失配的本地数据。
@@ -68,6 +72,8 @@ func (n *Node) rebalance(ctx context.Context) rebalanceResult {
 		}
 	}
 
+	result.ChunkScanned, result.ChunkCopied, result.ChunkFailed = n.rebalanceChunks(ctx)
+
 	return result
 }
 
@@ -96,4 +102,40 @@ func (n *Node) sendRebalance(ctx context.Context, target string) (rebalanceResul
 	}
 
 	return result, nil
+}
+
+// rebalanceChunks 按当前 ring 把本地 chunk 复制到当前应该负责它的所有节点
+// 当前阶段只复制，不删除旧副本
+func (n *Node) rebalanceChunks(ctx context.Context) (scanned int, copied int, failed int) {
+	ids, err := n.chunks.IDs()
+	if err != nil {
+		return 0, 0, 1
+	}
+
+	scanned = len(ids)
+
+	for _, id := range ids {
+		data, err := n.chunks.Get(id)
+		if err != nil {
+			failed++
+			continue
+		}
+
+		replicas := n.replicasFor(id)
+
+		for _, replica := range replicas {
+			if replica == n.addr {
+				continue
+			}
+
+			if err := n.putChunkReplica(ctx, replica, id, data); err != nil {
+				failed++
+				continue
+			}
+
+			copied++
+		}
+	}
+
+	return scanned, copied, failed
 }
