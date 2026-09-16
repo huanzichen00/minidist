@@ -13,10 +13,11 @@ type drainRequest struct {
 	FutureMembers []string `json:"future_members"`
 }
 
-// drain 将本地数据复制到未来成员配置的副本节点。
+// drain 将本地 KV 和 chunk 数据复制到未来成员配置的副本节点。
 func (n *Node) drain(ctx context.Context, futureMembers []string) error {
 	futureRing := hashring.New(futureMembers, n.virtualNodes)
 
+	// 先迁移 KV 数据
 	snapshot := n.store.Snapshot()
 
 	for key, value := range snapshot {
@@ -25,6 +26,27 @@ func (n *Node) drain(ctx context.Context, futureMembers []string) error {
 		for _, replica := range replicas {
 			if err := n.putReplica(ctx, replica, key, value); err != nil {
 				return fmt.Errorf("drain: copy key %q to %s: %w", key, replica, err)
+			}
+		}
+	}
+
+	// 再迁移本节点保存的 chunk
+	ids, err := n.chunks.IDs()
+	if err != nil {
+		return fmt.Errorf("drain: list chunks: %w", err)
+	}
+
+	for _, id := range ids {
+		data, err := n.chunks.Get(id)
+		if err != nil {
+			return fmt.Errorf("drain: read chunks: %w", err)
+		}
+
+		replicas := n.replicasForRing(futureRing, id)
+
+		for _, replica := range replicas {
+			if err := n.putChunkReplica(ctx, replica, id, data); err != nil {
+				return fmt.Errorf("drain: copy chunk %s to %s: %w", id, replica, err)
 			}
 		}
 	}
