@@ -1,6 +1,6 @@
 # MiniDist
 
-MiniDist 是一个用 Go 从零实现的分布式系统练习项目。当前已经完成一套 Dynamo 风格的分布式 KV，并在其上开始构建对象存储层：对象 metadata 走现有 quorum KV，文件内容则按固定大小切成 SHA-256 content-addressed chunks 落到本地文件系统。
+MiniDist 是一个用 Go 从零实现的分布式系统练习项目。当前已经完成一套 Dynamo 风格的分布式 KV，并在其上构建出可工作的分布式对象存储数据路径：对象 metadata 走现有 quorum KV，文件内容按固定大小切成 SHA-256 content-addressed chunks，再通过一致性哈希复制到多个节点。
 
 项目目标不是堆框架，而是自己实现并理解一致性哈希、复制、quorum、版本、故障探测、数据迁移、持久化和对象存储这些核心机制。
 
@@ -23,26 +23,28 @@ flowchart LR
     subgraph Object[Object Layer]
         Obj[object.Store]
         Meta[Metadata / Manifest]
-        Chunk[Local Chunk Store\nSHA-256 + 4 MiB chunks]
+        ChunkRoute[Distributed Chunk Routing]
+        ChunkDisk[Local Chunk Store\nSHA-256 + 4 MiB chunks]
     end
 
     Client --> Node
     Node --> KV
     Node --> Obj
     Obj -->|metadata| KV
-    Obj -->|chunk bytes| Chunk
+    Obj -->|chunk bytes| ChunkRoute
+    ChunkRoute -->|consistent hash + replication| ChunkDisk
     Memory --> Persist
     Ring --> Replication
 ```
 
-当前对象层的边界很明确：
+当前对象层的边界：
 
 ```text
 metadata   -> distributed KV
-chunk data -> local filesystem
+chunk data -> distributed chunk data plane -> local filesystem
 ```
 
-所以目前已经具备分布式 metadata，但 chunk replication 还没有实现。对象上传后，应从最初接收上传的节点读取，直到分布式 chunk 读写完成。
+metadata 和 chunk bytes 都已经可以跨节点读写。chunk 本身仍然是不可变的本地文件，但 placement、复制、读取 fallback、membership rebalance 和节点移除前 drain 都由 Node 层负责。
 
 ## 已实现功能
 
@@ -51,7 +53,7 @@ chunk data -> local filesystem
 - `Node.Put` / `Node.Get` 作为独立的分布式 KV API
 - `(Counter, NodeID)` 版本排序和 tombstone
 - 并发副本访问与 read repair
-- Hinted handoff：失败副本的最新写入暂存并后台重放
+- Hinted handoff：失败副本的最新 KV 写入暂存并后台重放
 - 直接 ping、间接 ping 与 failure detector（alive / suspect / dead）
 - Gossip、incarnation 和 self-refutation
 - Cluster membership 配置同步
@@ -60,11 +62,17 @@ chunk data -> local filesystem
 - WAL、CRC32、snapshot、启动恢复和 torn-tail repair
 - 固定大小 chunking，默认 4 MiB
 - SHA-256 content-addressed chunk store
-- chunk 落盘使用临时文件、`fsync`、rename
+- chunk 落盘使用独立临时文件、`fsync`、rename
+- 同一 chunk 的并发写入安全
 - chunk 读取时重新校验 SHA-256
+- chunk 根据一致性哈希选择 N 个 owner
+- chunk 写入使用 write quorum
+- distributed chunk read：依次尝试 owner，返回第一个 checksum-valid 副本
+- membership 变化后的 copy-only chunk rebalance
+- RemoveMember 前按 future ring drain chunk
 - Object metadata / manifest
 - Object metadata 通过现有 distributed KV 持久化
-- `/objects/{name}` 上传和下载接口
+- `/objects/{name}` 跨节点上传和下载接口
 
 ## Object Storage 当前流程
 
@@ -79,7 +87,11 @@ object.Store.Put
         +-> io.Reader 按 4 MiB 分块
         |      |
         |      +-> SHA-256(chunk)
-        |      +-> 本地 *.wal.chunks/ 落盘
+        |      +-> Node.PutChunk
+        |              |
+        |              +-> consistent hash -> N owners
+        |              +-> 并发复制
+        |              +-> W quorum 成功
         |
         +-> Metadata{Name, Size, ChunkSize, Chunks}
                |
@@ -87,6 +99,8 @@ object.Store.Put
                +-> Node.Put
                +-> distributed KV quorum write
 ```
+
+metadata 在所有 chunk 成功写入后才提交，因此它承担 object 的逻辑 commit point。如果 chunk 已写入但 metadata 提交失败，会留下 orphan chunks；当前不会在上传路径里做复杂回滚，后续由 GC 处理。
 
 下载：
 
@@ -100,8 +114,10 @@ Node.Get(metadata key)
 Metadata
         |
         v
-按顺序 chunk.Get(ID)
+按顺序处理每个 chunk ID
         |
+        +-> consistent hash -> owners
+        +-> 依次尝试副本
         +-> SHA-256 校验
         +-> size 校验
         |
@@ -109,7 +125,7 @@ Metadata
 HTTP ResponseWriter
 ```
 
-metadata 在所有 chunk 成功写入后才提交，因此它承担 object 的逻辑 commit point。如果 chunk 已写入但 metadata 提交失败，会留下 orphan chunks；后续会通过 GC 处理，而不是在上传路径里做复杂回滚。
+chunk 是不可变、按内容寻址的数据，因此当前 distributed read 不做 KV 那样的版本仲裁；只要从负责节点中拿到一个 checksum-valid 副本即可。
 
 ## 快速开始
 
@@ -165,14 +181,20 @@ curl -X PUT --data-binary @example.bin \
 
 服务会返回对应的 metadata JSON，其中包含对象总大小和 chunk 列表。
 
-当前 chunk 还是本地存储，因此下载时先访问同一个节点：
+对象可以从其他节点读取：
 
 ```bash
-curl http://127.0.0.1:8081/objects/example.bin \
+curl http://127.0.0.1:8082/objects/example.bin \
   -o downloaded.bin
 ```
 
-metadata 本身通过 distributed KV 保存，所以它已经具备 quorum replication 和 WAL/snapshot 持久化；真正缺少的是 chunk bytes 的跨节点复制。
+校验内容：
+
+```bash
+shasum -a 256 example.bin downloaded.bin
+```
+
+只要 metadata 和对应 chunk 的可用副本仍存在，读取节点不需要是最初接收上传的节点。
 
 ## 成员变更
 
@@ -191,6 +213,8 @@ curl -X POST http://127.0.0.1:8081/admin/members \
   -d '{"member":"127.0.0.1:8084"}'
 ```
 
+成员配置同步完成后，各节点会执行 rebalance：KV 按当前 ring 迁移；本地 chunk 也会按当前 ring 复制到新的 owner。当前 chunk rebalance 是 copy-only，不会立即删除旧 chunk。
+
 移除节点：
 
 ```bash
@@ -199,7 +223,24 @@ curl -X DELETE http://127.0.0.1:8081/admin/members \
   -d '{"member":"127.0.0.1:8084"}'
 ```
 
-当前 drain / rebalance 迁移的是 KV 数据，还没有迁移 chunk ownership。chunk replication 完成后会单独补 chunk rebalance。
+RemoveMember 使用两阶段流程：
+
+```text
+Phase 1
+待移除节点根据 future ring drain KV + chunks
+        |
+        v
+全部迁移成功
+        |
+        v
+Phase 2
+同步新的 membership
+        |
+        v
+剩余节点 rebalance
+```
+
+只要 drain 失败，成员变更就不会继续，因此待移除节点仍保留在当前 ring 中。
 
 ## 本地数据文件
 
@@ -215,7 +256,7 @@ minidist-127.0.0.1_8081.wal.chunks/
 
 - `.wal` 保存 KV WAL
 - `.wal.snapshot` 保存 KV snapshot
-- `.wal.chunks/` 保存 content-addressed chunk files
+- `.wal.chunks/` 保存本节点持有的 content-addressed chunk files
 
 节点启动时先加载 snapshot，再 replay WAL。达到 snapshot 阈值或调用 `SaveSnapshot()` 后会原子保存 snapshot，并把 WAL 截断到只保留 header。
 
@@ -223,31 +264,58 @@ minidist-127.0.0.1_8081.wal.chunks/
 
 ## 测试
 
+基础测试：
+
 ```bash
 go test ./...
 go test -race ./...
 go vet ./...
 ```
 
-## 下一步
+对象存储可以做一个跨节点 round trip：
 
-当前主线是把 chunk data plane 真正分布式化：
+```bash
+dd if=/dev/urandom of=/tmp/minidist-test.bin bs=1m count=10
 
-```text
-1. chunk replication
-   SHA-256 ID -> consistent hash -> N owners -> write quorum
+curl -X PUT --data-binary @/tmp/minidist-test.bin \
+  http://127.0.0.1:8081/objects/test.bin
 
-2. distributed chunk read
-   从 owner 中取得第一个 checksum-valid chunk
+curl http://127.0.0.1:8082/objects/test.bin \
+  -o /tmp/minidist-downloaded.bin
 
-3. chunk repair / rebalance
-   节点故障或 membership 变化后恢复目标副本数
-
-4. object overwrite / delete
-   metadata 更新作为 commit point
-
-5. orphan chunk GC
-   mark live metadata -> sweep unreferenced chunks
+shasum -a 256 /tmp/minidist-test.bin /tmp/minidist-downloaded.bin
 ```
 
-后续如果继续往 control plane 演进，可以再引入更强一致的 metadata 方案，例如 Raft；不会为了“完整”而提前把这些复杂度塞进当前实现。
+还可以使用四节点集群验证 RemoveMember：先上传对象，确认待移除节点实际持有 chunk，再执行 `DELETE /admin/members`，停止该节点，最后从剩余节点下载并比较 SHA-256。这样可以同时覆盖 future-ring chunk drain、membership 更新、rebalance 和 distributed chunk read。
+
+## 当前限制
+
+- chunk rebalance 目前只复制，不主动删除旧副本
+- chunk 暂时没有独立的 hinted handoff
+- object overwrite / delete 的完整生命周期还没有做完
+- orphan / redundant chunks 还没有 GC
+- membership 变更仍是教学版协调流程，并没有 Raft / leader 提供强一致控制面
+- 当前 rebalance / drain 假设 membership 在操作期间相对稳定
+
+## 下一步
+
+当前比较自然的后续方向：
+
+```text
+1. chunk read repair / anti-entropy
+   发现缺副本后把 checksum-valid 数据补回目标 owner
+
+2. object overwrite / delete
+   metadata 更新作为 commit point，chunk 延迟回收
+
+3. orphan / redundant chunk GC
+   mark live metadata -> grace period -> sweep unreferenced chunks
+
+4. chunk rebalance cleanup
+   在确认新 owners 安全持有数据后回收旧 placement
+
+5. stronger control plane
+   需要时再引入 Raft / leader 来串行化 membership 与 metadata 控制操作
+```
+
+MiniDist 目前仍然是教学和练习项目：优先保持协议和数据流清晰，在真实边界出现后再增加复杂机制，而不是提前堆抽象。
