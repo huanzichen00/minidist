@@ -15,8 +15,9 @@ import (
 type Node struct {
 	addr string
 
-	ring  *hashring.Ring
-	store *store.Memory
+	ring   *hashring.Ring
+	store  *store.Memory
+	chunks *chunk.Store
 
 	virtualNodes int
 
@@ -57,6 +58,7 @@ func New(addr string, nodes []string, walPath string) (*Node, error) {
 		addr:         addr,
 		ring:         hashring.New(nodes, 100),
 		store:        memory,
+		chunks:       chunkStore,
 		virtualNodes: 100,
 
 		client: &http.Client{

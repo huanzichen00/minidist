@@ -26,6 +26,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/admin/members", n.handleAdminMember)
 	mux.HandleFunc("/internal/drain", n.handleDrain)
 	mux.HandleFunc("/objects/", n.handleObject)
+	mux.HandleFunc("/internal/chunks/", n.handleInternalChunk)
 
 	return mux
 }
