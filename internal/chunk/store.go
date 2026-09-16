@@ -50,36 +50,36 @@ func (s *Store) Put(data []byte) (string, error) {
 		return "", err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
 
-	tmpPath := path + ".tmp"
-
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 每次写入使用独立临时文件，避免相同 chunk 并发写入时争用固定 .tmp 文件。
+	file, err := os.CreateTemp(dir, ".chunk-*.tmp")
 	if err != nil {
 		return "", err
 	}
+	tmpPath := file.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
-		_ = os.Remove(tmpPath)
 		return "", err
 	}
 
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
-		_ = os.Remove(tmpPath)
 		return "", err
 	}
 
 	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
 		return "", err
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
 		return "", err
 	}
 
