@@ -20,12 +20,12 @@ func (s *testMetadataStore) Put(_ context.Context, key string, value []byte) err
 	return nil
 }
 
-func (s *testMetadataStore) Get(_ context.Context, key string) ([]byte, error) {
+func (s *testMetadataStore) Get(_ context.Context, key string) ([]byte, bool, error) {
 	value, ok := s.values[key]
 	if !ok {
-		return nil, errors.New("metadata not found")
+		return nil, false, nil
 	}
-	return append([]byte(nil), value...), nil
+	return append([]byte(nil), value...), true, nil
 }
 
 // TestStorePutAndWriteTo 验证对象写入后可由 metadata 重建。
@@ -49,8 +49,8 @@ func TestStorePutAndWriteTo(t *testing.T) {
 	if len(metadata.Chunks) != 3 {
 		t.Fatalf("chunk count = %d, want 3", len(metadata.Chunks))
 	}
-	if _, err := metadataStore.Get(ctx, metadataKey("file.txt")); err != nil {
-		t.Fatalf("metadata was not persisted: %v", err)
+	if _, found, err := metadataStore.Get(ctx, metadataKey("file.txt")); err != nil || !found {
+		t.Fatalf("metadata was not persisted: found=%t err=%v", found, err)
 	}
 
 	var output bytes.Buffer

@@ -16,14 +16,19 @@ type MetadataStore interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 }
 
+type ChunkStore interface {
+	PutChunk(ctx context.Context, data []byte) (string, error)
+	GetChunk(ctx context.Context, id string) ([]byte, error)
+}
+
 // Store 使用 chunk store 保存对象内容。
 type Store struct {
-	chunks   *chunk.Store
+	chunks   ChunkStore
 	metadata MetadataStore
 }
 
 // New 创建 object store，并复用底层 chunk store。
-func New(chunks *chunk.Store, metadata MetadataStore) *Store {
+func New(chunks ChunkStore, metadata MetadataStore) *Store {
 	return &Store{
 		chunks:   chunks,
 		metadata: metadata,
@@ -45,7 +50,9 @@ func (s *Store) Put(ctx context.Context, name string, r io.Reader, chunkSize int
 		return Metadata{}, fmt.Errorf("object reader is nil")
 	}
 
-	chunks, err := s.chunks.WriteFromReader(r, chunkSize)
+	chunks, err := chunk.WriteChunks(r, chunkSize, func(data []byte) (string, error) {
+		return s.chunks.PutChunk(ctx, data)
+	})
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -76,6 +83,10 @@ func (s *Store) Put(ctx context.Context, name string, r io.Reader, chunkSize int
 
 // WriteTo 按 metadata 中的顺序读取 chunk，并写入目标 Writer。
 func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
+	return s.writeTo(context.Background(), metadata, w)
+}
+
+func (s *Store) writeTo(ctx context.Context, metadata Metadata, w io.Writer) error {
 	if s == nil || s.chunks == nil {
 		return fmt.Errorf("chunk store is nil")
 	}
@@ -86,7 +97,7 @@ func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
 	var written int64
 
 	for _, info := range metadata.Chunks {
-		data, err := s.chunks.Get(info.ID)
+		data, err := s.chunks.GetChunk(ctx, info.ID)
 		if err != nil {
 			return fmt.Errorf("read chunk %s: %w", info.ID, err)
 		}
@@ -149,7 +160,7 @@ func (s *Store) Get(ctx context.Context, name string, w io.Writer) (bool, error)
 		return false, nil
 	}
 
-	if err := s.WriteTo(metadata, w); err != nil {
+	if err := s.writeTo(ctx, metadata, w); err != nil {
 		return false, err
 	}
 

@@ -16,6 +16,16 @@ type ChunkInfo struct {
 
 // WriteFromReader 从数据流中按 chunkSize 拆分并保存数据，返回 chunk 信息。
 func (s *Store) WriteFromReader(r io.Reader, chunkSize int) ([]ChunkInfo, error) {
+	return WriteChunks(r, chunkSize, s.Put)
+}
+
+func WriteChunks(r io.Reader, chunkSize int, put func([]byte) (string, error)) ([]ChunkInfo, error) {
+	if r == nil {
+		return nil, fmt.Errorf("reader is nil")
+	}
+	if put == nil {
+		return nil, fmt.Errorf("put function is nil")
+	}
 	if chunkSize <= 0 {
 		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)
 	}
@@ -32,11 +42,9 @@ func (s *Store) WriteFromReader(r io.Reader, chunkSize int) ([]ChunkInfo, error)
 			return nil, err
 		}
 
-		data := buf[:n]
-
-		id, err := s.Put(data)
-		if err != nil {
-			return nil, err
+		id, putErr := put(buf[:n])
+		if putErr != nil {
+			return nil, putErr
 		}
 
 		chunks = append(chunks, ChunkInfo{

@@ -1,6 +1,7 @@
 package chunk
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -83,6 +84,22 @@ func (s *Store) Put(data []byte) (string, error) {
 	}
 
 	return id, nil
+}
+
+// PutChunk 是 ChunkStore 接口的 context-aware 适配方法。
+func (s *Store) PutChunk(ctx context.Context, data []byte) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.Put(data)
+}
+
+// GetChunk 是 ChunkStore 接口的 context-aware 适配方法。
+func (s *Store) GetChunk(ctx context.Context, id string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.Get(id)
 }
 
 // Get 读取指定 chunk，并校验内容是否与 chunk ID 匹配。

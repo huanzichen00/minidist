@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"minidist/internal/chunk"
 	"minidist/internal/store"
 	"net/http"
 	"slices"
@@ -24,7 +25,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
 	mux.HandleFunc("/admin/members", n.handleAdminMember)
 	mux.HandleFunc("/internal/drain", n.handleDrain)
-	mux.HandleFunc("/objects/", n.hanldeObject)
+	mux.HandleFunc("/objects/", n.handleObject)
 
 	return mux
 }
