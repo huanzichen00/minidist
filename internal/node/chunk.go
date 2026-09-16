@@ -1,7 +1,10 @@
 package node
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"minidist/internal/chunk"
 	"net/http"
@@ -66,9 +69,85 @@ func (n *Node) handleInternalChunkGet(w http.ResponseWriter, id string) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/octet-stream")
 
 	if _, err := w.Write(data); err != nil {
 		return
 	}
+}
+
+// PutChunk 根据内容生成 chunk ID，并把 chunk 并发写入 ring 选出的副本。
+func (n *Node) PutChunk(ctx context.Context, data []byte) (string, error) {
+	id := chunk.ID(data)
+
+	replicas := n.replicasFor(id)
+	if len(replicas) == 0 {
+		return "", fmt.Errorf("no chunk replicas")
+	}
+
+	results := make(chan writeResult, len(replicas))
+
+	for _, replica := range replicas {
+		go func(replica string) {
+			err := n.putChunkReplica(ctx, replica, id, data)
+			results <- writeResult{
+				replica: replica,
+				err:     err,
+			}
+		}(replica)
+	}
+
+	success := 0
+
+	for range replicas {
+		result := <-results
+		if result.err != nil {
+			continue
+		}
+
+		success++
+	}
+
+	if success < n.writeQuorum {
+		return "", fmt.Errorf("chunk write quorum not reached: success=%d, required=%d", success, n.writeQuorum)
+	}
+
+	return id, nil
+}
+
+// putChunkReplica 把一个 chunk 写入指定的本地或远端副本。
+func (n *Node) putChunkReplica(ctx context.Context, replica string, id string, data []byte) error {
+	if replica == n.addr {
+		storedID, err := n.chunks.Put(data)
+		if err != nil {
+			return err
+		}
+
+		if storedID != id {
+			return fmt.Errorf("chunk id mismatch: expected=%s, actual=%s", id, storedID)
+		}
+
+		return nil
+	}
+
+	url := fmt.Sprintf("http://%s/internal/chunks/%s", replica, id)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("chunk replica %s returned %s", replica, resp.Status)
+	}
+
+	return nil
 }
