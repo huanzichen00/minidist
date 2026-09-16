@@ -39,7 +39,7 @@ func (n *Node) drain(ctx context.Context, futureMembers []string) error {
 	for _, id := range ids {
 		data, err := n.chunks.Get(id)
 		if err != nil {
-			return fmt.Errorf("drain: read chunks: %w", err)
+			return fmt.Errorf("drain: read chunks %s: %w", id, err)
 		}
 
 		replicas := n.replicasForRing(futureRing, id)
