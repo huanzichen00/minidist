@@ -74,7 +74,7 @@ func New(addr string, nodes []string, walPath string) (*Node, error) {
 	}
 
 	n.version.Store(memory.MaxVersionCounter())
-	n.objects = object.New(chunkStore, n)
+	n.objects = object.New(n, n)
 
 	return n, nil
 }

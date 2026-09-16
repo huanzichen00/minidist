@@ -151,3 +151,73 @@ func (n *Node) putChunkReplica(ctx context.Context, replica string, id string, d
 
 	return nil
 }
+
+// GetChunk 从 chunk 的负责副本中读取一个校验正确的副本。
+func (n *Node) GetChunk(ctx context.Context, id string) ([]byte, error) {
+	replicas := n.replicasFor(id)
+	if len(replicas) == 0 {
+		return nil, fmt.Errorf("no chunk replicas")
+	}
+
+	var lastErr error
+
+	for _, replica := range replicas {
+		data, err := n.getChunkReplica(ctx, replica, id)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if chunk.ID(data) != id {
+			lastErr = fmt.Errorf("chunk checksum mismatch: %s", id)
+			continue
+		}
+
+		return data, nil
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("chunk unavailable: %w", lastErr)
+	}
+
+	return nil, chunk.ErrNotFound
+}
+
+// getChunkReplica 从指定的本地或远端副本读取 chunk。
+func (n *Node) getChunkReplica(ctx context.Context, replica string, id string) ([]byte, error) {
+	if replica == n.addr {
+		return n.chunks.Get(id)
+	}
+
+	url := fmt.Sprintf("http://%s/internal/chunks/%s", replica, id)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, chunk.ErrNotFound
+	}
+
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("chunk replica %s returned %s", replica, resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if chunk.ID(data) != id {
+		return nil, fmt.Errorf("chunk checksum mismatch from replica %s", replica)
+	}
+
+	return data, nil
+}

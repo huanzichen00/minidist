@@ -18,12 +18,18 @@ type MetadataStore interface {
 
 // Store 使用 chunk store 保存对象内容。
 type Store struct {
-	chunks   *chunk.Store
+	chunks   ChunkStore
 	metadata MetadataStore
 }
 
+// ChunkStore 定义对象层使用的分布式 chunk 读写接口。
+type ChunkStore interface {
+	PutChunk(ctx context.Context, data []byte) (string, error)
+	GetChunk(ctx context.Context, id string) ([]byte, error)
+}
+
 // New 创建 object store，并复用底层 chunk store。
-func New(chunks *chunk.Store, metadata MetadataStore) *Store {
+func New(chunks ChunkStore, metadata MetadataStore) *Store {
 	return &Store{
 		chunks:   chunks,
 		metadata: metadata,
@@ -45,7 +51,7 @@ func (s *Store) Put(ctx context.Context, name string, r io.Reader, chunkSize int
 		return Metadata{}, fmt.Errorf("object reader is nil")
 	}
 
-	chunks, err := s.chunks.WriteFromReader(r, chunkSize)
+	chunks, err := s.writeChunks(ctx, r, chunkSize)
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -75,7 +81,7 @@ func (s *Store) Put(ctx context.Context, name string, r io.Reader, chunkSize int
 }
 
 // WriteTo 按 metadata 中的顺序读取 chunk，并写入目标 Writer。
-func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
+func (s *Store) WriteTo(ctx context.Context, metadata Metadata, w io.Writer) error {
 	if s == nil || s.chunks == nil {
 		return fmt.Errorf("chunk store is nil")
 	}
@@ -86,11 +92,10 @@ func (s *Store) WriteTo(metadata Metadata, w io.Writer) error {
 	var written int64
 
 	for _, info := range metadata.Chunks {
-		data, err := s.chunks.Get(info.ID)
+		data, err := s.chunks.GetChunk(ctx, info.ID)
 		if err != nil {
 			return fmt.Errorf("read chunk %s: %w", info.ID, err)
 		}
-
 		if len(data) != info.Size {
 			return fmt.Errorf("chunk size mismatch: id=%s metadata=%d actual=%d", info.ID, info.Size, len(data))
 		}
@@ -119,6 +124,7 @@ func metadataKey(name string) string {
 	return "object:meta:" + hex.EncodeToString(sum[:])
 }
 
+// Metadata 读取对象元数据。
 func (s *Store) Metadata(ctx context.Context, name string) (Metadata, bool, error) {
 	if s == nil || s.metadata == nil {
 		return Metadata{}, false, fmt.Errorf("metadata store is nil")
@@ -140,6 +146,7 @@ func (s *Store) Metadata(ctx context.Context, name string) (Metadata, bool, erro
 	return metadata, true, nil
 }
 
+// Get 读取对象元数据并按顺序写出完整对象。
 func (s *Store) Get(ctx context.Context, name string, w io.Writer) (bool, error) {
 	metadata, found, err := s.Metadata(ctx, name)
 	if err != nil {
@@ -149,9 +156,47 @@ func (s *Store) Get(ctx context.Context, name string, w io.Writer) (bool, error)
 		return false, nil
 	}
 
-	if err := s.WriteTo(metadata, w); err != nil {
+	if err := s.WriteTo(ctx, metadata, w); err != nil {
 		return false, err
 	}
 
 	return true, nil
+}
+
+// writeChunks 从对象数据流中切出 chunk，并通过分布式 chunk store 保存。
+func (s *Store) writeChunks(ctx context.Context, r io.Reader, chunkSize int) ([]chunk.ChunkInfo, error) {
+	if chunkSize <= 0 {
+		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)
+	}
+
+	buf := make([]byte, chunkSize)
+	var chunks []chunk.ChunkInfo
+
+	for {
+		n, readErr := io.ReadFull(r, buf)
+
+		if readErr == io.EOF {
+			break
+		}
+
+		if readErr != nil && readErr != io.ErrUnexpectedEOF {
+			return nil, readErr
+		}
+
+		id, err := s.chunks.PutChunk(ctx, buf[:n])
+		if err != nil {
+			return nil, err
+		}
+
+		chunks = append(chunks, chunk.ChunkInfo{
+			ID:   id,
+			Size: n,
+		})
+
+		if readErr == io.ErrUnexpectedEOF {
+			break
+		}
+	}
+
+	return chunks, nil
 }

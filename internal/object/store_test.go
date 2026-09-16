@@ -12,6 +12,18 @@ type testMetadataStore struct {
 	values map[string][]byte
 }
 
+type testChunkStore struct {
+	store *chunk.Store
+}
+
+func (s *testChunkStore) PutChunk(_ context.Context, data []byte) (string, error) {
+	return s.store.Put(data)
+}
+
+func (s *testChunkStore) GetChunk(_ context.Context, id string) ([]byte, error) {
+	return s.store.Get(id)
+}
+
 func (s *testMetadataStore) Put(_ context.Context, key string, value []byte) error {
 	if s.values == nil {
 		s.values = make(map[string][]byte)
@@ -35,7 +47,7 @@ func TestStorePutAndWriteTo(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadataStore := &testMetadataStore{}
-	store := New(chunks, metadataStore)
+	store := New(&testChunkStore{store: chunks}, metadataStore)
 
 	data := []byte("0123456789")
 	ctx := context.Background()
@@ -54,7 +66,7 @@ func TestStorePutAndWriteTo(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := store.WriteTo(metadata, &output); err != nil {
+	if err := store.WriteTo(ctx, metadata, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(output.Bytes(), data) {
@@ -68,7 +80,7 @@ func TestStoreWriteToMissingChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := New(chunks, &testMetadataStore{})
+	store := New(&testChunkStore{store: chunks}, &testMetadataStore{})
 
 	metadata, err := store.Put(context.Background(), "file.txt", bytes.NewReader([]byte("data")), 4)
 	if err != nil {
@@ -78,7 +90,7 @@ func TestStoreWriteToMissingChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = store.WriteTo(metadata, &bytes.Buffer{})
+	err = store.WriteTo(context.Background(), metadata, &bytes.Buffer{})
 	if !errors.Is(err, chunk.ErrNotFound) {
 		t.Fatalf("write error = %v, want %v", err, chunk.ErrNotFound)
 	}
@@ -91,7 +103,7 @@ func TestStorePutRejectsNilReader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = New(chunks, &testMetadataStore{}).Put(context.Background(), "file.txt", nil, 4)
+	_, err = New(&testChunkStore{store: chunks}, &testMetadataStore{}).Put(context.Background(), "file.txt", nil, 4)
 	if err == nil {
 		t.Fatal("expected nil reader error")
 	}
