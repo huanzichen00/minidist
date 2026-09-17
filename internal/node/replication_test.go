@@ -80,3 +80,22 @@ func TestHandleReplicatedGetMapsGetResult(t *testing.T) {
 		t.Fatalf("response = %d %q, want 200 value", resp.Code, resp.Body.String())
 	}
 }
+
+// TestDeleteWritesTombstone 验证 Delete 写入 tombstone 后对象对外不可见。
+func TestDeleteWritesTombstone(t *testing.T) {
+	node := newReplicationTestNode(t)
+	if err := node.Put(context.Background(), "foo", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Delete(context.Background(), "foo"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, found, err := node.Get(context.Background(), "foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("expected deleted key to be not found")
+	}
+}

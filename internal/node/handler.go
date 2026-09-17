@@ -325,6 +325,8 @@ func (n *Node) handleObject(w http.ResponseWriter, r *http.Request) {
 		n.handleObjectPut(w, r, name)
 	case http.MethodGet:
 		n.handleObjectGet(w, r, name)
+	case http.MethodDelete:
+		n.handleObjectDelete(w, r, name)
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -354,4 +356,14 @@ func (n *Node) handleObjectGet(w http.ResponseWriter, r *http.Request, name stri
 	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// handleObjectDelete 删除对象 metadata，chunk 由后续 GC 回收。
+func (n *Node) handleObjectDelete(w http.ResponseWriter, r *http.Request, name string) {
+	if err := n.objects.Delete(r.Context(), name); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

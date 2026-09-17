@@ -14,6 +14,7 @@ import (
 type MetadataStore interface {
 	Put(ctx context.Context, key string, value []byte) error
 	Get(ctx context.Context, key string) ([]byte, bool, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // Store 使用 chunk store 保存对象内容。
@@ -199,4 +200,16 @@ func (s *Store) writeChunks(ctx context.Context, r io.Reader, chunkSize int) ([]
 	}
 
 	return chunks, nil
+}
+
+// Delete 删除对象的 metadata，但不立即删除其 chunk。
+func (s *Store) Delete(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("object name is empty")
+	}
+	if s == nil || s.metadata == nil {
+		return fmt.Errorf("metadata store is nil")
+	}
+
+	return s.metadata.Delete(ctx, metadataKey(name))
 }

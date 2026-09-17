@@ -49,6 +49,7 @@ func (n *Node) handleReplicatedGet(w http.ResponseWriter, r *http.Request, key s
 }
 
 // replicateValue 并发写入所有副本，并为失败副本保存 hint。
+// 未达到 quorum 时返回 false。
 func (n *Node) replicateValue(ctx context.Context, key string, value store.Value) bool {
 	replicas := n.replicasFor(key)
 
@@ -97,19 +98,8 @@ func (n *Node) handleReplicatedPut(w http.ResponseWriter, r *http.Request, key s
 
 // handleReplicatedDelete 是 HTTP 请求翻译层，将 DELETE 请求映射为 tombstone quorum 写入。
 func (n *Node) handleReplicatedDelete(w http.ResponseWriter, r *http.Request, key string) {
-	version, err := n.nextVersion(r.Context(), key)
-	if err != nil {
+	if err := n.Delete(r.Context(), key); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-
-	value := store.Value{
-		Version: version,
-		Deleted: true,
-	}
-
-	if !n.replicateValue(r.Context(), key, value) {
-		http.Error(w, "delete quorum not reached", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -288,4 +278,23 @@ func (n *Node) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	}
 
 	return latest.Data, true, nil
+}
+
+// Delete 为指定 key 分配新版本，并通过 quorum 写入 tombstone。
+func (n *Node) Delete(ctx context.Context, key string) error {
+	version, err := n.nextVersion(ctx, key)
+	if err != nil {
+		return err
+	}
+
+	value := store.Value{
+		Version: version,
+		Deleted: true,
+	}
+
+	if !n.replicateValue(ctx, key, value) {
+		return fmt.Errorf("delete quorum not reached")
+	}
+
+	return nil
 }
