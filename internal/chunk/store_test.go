@@ -168,6 +168,34 @@ func TestStoreGetRejectsTamperedChunk(t *testing.T) {
 	}
 }
 
+// TestStorePutRepairsTamperedChunk 验证 Put 会覆盖同 ID 的损坏文件。
+func TestStorePutRepairsTamperedChunk(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	original := []byte("original")
+	id, err := store.Put(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.path(id), []byte("tampered"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(original); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("chunk = %q, want %q", got, original)
+	}
+}
+
 // TestStoreDeleteIsIdempotent 验证重复删除同一个 chunk 仍成功。
 func TestStoreDeleteIsIdempotent(t *testing.T) {
 	store, err := Open(t.TempDir())

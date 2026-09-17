@@ -44,8 +44,10 @@ func (s *Store) Put(data []byte) (string, error) {
 	id := ID(data)
 	path := s.path(id)
 
-	if _, err := os.Stat(path); err == nil {
-		return id, nil
+	if existing, err := os.ReadFile(path); err == nil {
+		if ID(existing) == id {
+			return id, nil
+		}
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
