@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"minidist/internal/chunk"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // handleInternalChunk 分发内部 chunk 的上传和下载请求。
@@ -173,6 +175,11 @@ func (n *Node) GetChunk(ctx context.Context, id string) ([]byte, error) {
 			continue
 		}
 
+		// repair 不能绑定请求 context，否则请求结束后 context 会立即取消。
+		repairData := bytes.Clone(data)
+		repairReplicas := append([]string(nil), replicas...)
+		go n.repairChunk(id, repairData, replica, repairReplicas)
+
 		return data, nil
 	}
 
@@ -220,4 +227,25 @@ func (n *Node) getChunkReplica(ctx context.Context, replica string, id string) (
 	}
 
 	return data, nil
+}
+
+// repairChunk 用已校验正确的数据修复缺失或损坏的负责副本。
+func (n *Node) repairChunk(id string, data []byte, source string, replicas []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, replica := range replicas {
+		if replica == source {
+			continue
+		}
+
+		// 当前副本已有正确 chunk 时跳过。
+		if _, err := n.getChunkReplica(ctx, replica, id); err == nil {
+			continue
+		}
+
+		if err := n.putChunkReplica(ctx, replica, id, data); err != nil {
+			log.Printf("repair chunk %s on %s: %v", id, replica, err)
+		}
+	}
 }
