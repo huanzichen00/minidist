@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"time"
 )
 
 // ErrNotFound 表示指定 chunk 不存在。
@@ -16,6 +18,16 @@ var ErrNotFound = errors.New("chunk not found")
 // Store 是按内容寻址保存 chunk 的本地存储。
 type Store struct {
 	root string
+
+	// gcMu 保证普通 chunk 访问不会与物理回收同时操作同一个文件。
+	gcMu sync.RWMutex
+}
+
+// SweepResult 描述一次本地 chunk GC 的结果。
+type SweepResult struct {
+	Scanned int `json:"scanned"`
+	Deleted int `json:"deleted"`
+	Kept    int `json:"kept"`
 }
 
 // Open 打开本地 chunk store，并确保根目录存在。
@@ -40,12 +52,20 @@ func ID(data []byte) string {
 }
 
 // Put 按内容寻址方式将 chunk 写入磁盘，并返回其 ID。
+// 已存在且内容正确的 chunk 会刷新 mtime，避免正在被新对象复用的 chunk 被 GC 回收。
 func (s *Store) Put(data []byte) (string, error) {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+
 	id := ID(data)
 	path := s.path(id)
 
 	if existing, err := os.ReadFile(path); err == nil {
 		if ID(existing) == id {
+			now := time.Now()
+			if err := os.Chtimes(path, now, now); err != nil {
+				return "", err
+			}
 			return id, nil
 		}
 	} else if !os.IsNotExist(err) {
@@ -90,6 +110,9 @@ func (s *Store) Put(data []byte) (string, error) {
 
 // Get 读取指定 chunk，并校验内容是否与 chunk ID 匹配。
 func (s *Store) Get(id string) ([]byte, error) {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
@@ -113,6 +136,9 @@ func (s *Store) Get(id string) ([]byte, error) {
 
 // Delete 删除指定 chunk；chunk 不存在时视为成功。
 func (s *Store) Delete(id string) error {
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+
 	if err := validateID(id); err != nil {
 		return err
 	}
@@ -127,6 +153,9 @@ func (s *Store) Delete(id string) error {
 
 // Exists 判断指定 chunk 是否已经存在。
 func (s *Store) Exists(id string) (bool, error) {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+
 	if err := validateID(id); err != nil {
 		return false, err
 	}
@@ -162,6 +191,9 @@ func validateID(id string) error {
 
 // IDs 返回当前节点底层保存的所有合法 chunk ID
 func (s *Store) IDs() ([]string, error) {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+
 	var ids []string
 
 	err := filepath.WalkDir(s.root, func(path string, entry os.DirEntry, err error) error {
@@ -191,4 +223,56 @@ func (s *Store) IDs() ([]string, error) {
 
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// Sweep 删除不在 live 集合中且早于 cutoff 的本地 chunk。
+func (s *Store) Sweep(live map[string]struct{}, cutoff time.Time) (SweepResult, error) {
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+
+	var result SweepResult
+
+	err := filepath.WalkDir(s.root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+
+		id := entry.Name()
+		if err := validateID(id); err != nil {
+			return nil
+		}
+
+		result.Scanned++
+
+		if _, ok := live[id]; ok {
+			result.Kept++
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+
+		if !info.ModTime().Before(cutoff) {
+			result.Kept++
+			return nil
+		}
+
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+
+		result.Deleted++
+		return nil
+	})
+	if err != nil {
+		return SweepResult{}, err
+	}
+
+	return result, nil
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestStorePutGetDelete 验证 chunk 的写入、读取和删除流程。
@@ -252,5 +253,135 @@ func TestStoreWriteFromReaderRejectsInvalidSize(t *testing.T) {
 	_, err = store.WriteFromReader(strings.NewReader("data"), 0)
 	if err == nil || !strings.Contains(err.Error(), "invalid chunk size") {
 		t.Fatalf("write error = %v, want invalid chunk size", err)
+	}
+}
+
+// TestStoreSweepKeepsLiveChunk 验证 GC 不删除 live 集合中的旧 chunk。
+func TestStoreSweepKeepsLiveChunk(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte("live")
+	id, err := store.Put(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(store.path(id), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.Sweep(map[string]struct{}{id: {}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", result.Deleted)
+	}
+
+	if _, err := store.Get(id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStoreSweepDeletesOldOrphan 验证 GC 删除过期且未被引用的 chunk。
+func TestStoreSweepDeletesOldOrphan(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := store.Put([]byte("orphan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(store.path(id), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.Sweep(nil, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", result.Deleted)
+	}
+
+	exists, err := store.Exists(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("orphan chunk still exists")
+	}
+}
+
+// TestStoreSweepKeepsRecentOrphan 验证 GC 保留未到回收时间的孤儿 chunk。
+func TestStoreSweepKeepsRecentOrphan(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := store.Put([]byte("recent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.Sweep(nil, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", result.Deleted)
+	}
+
+	exists, err := store.Exists(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("recent chunk was deleted")
+	}
+}
+
+// TestStorePutRefreshesExistingChunkModTime 验证复用 chunk 会刷新其回收时间。
+func TestStorePutRefreshesExistingChunkModTime(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte("reused chunk")
+	id, err := store.Put(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().Add(-time.Hour)
+	path := store.path(id)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(data); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !info.ModTime().After(old) {
+		t.Fatalf("mtime was not refreshed: %v", info.ModTime())
 	}
 }
