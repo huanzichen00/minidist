@@ -122,7 +122,7 @@ func (s *Store) WriteTo(ctx context.Context, metadata Metadata, w io.Writer) err
 // metadataKey 将对象名转换为稳定的元数据 KV 键。
 func metadataKey(name string) string {
 	sum := sha256.Sum256([]byte(name))
-	return "object:meta:" + hex.EncodeToString(sum[:])
+	return MetadataKeyPrefix + hex.EncodeToString(sum[:])
 }
 
 // Metadata 读取对象元数据。
