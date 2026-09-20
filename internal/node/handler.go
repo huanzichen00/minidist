@@ -23,6 +23,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/ping-request", n.handlePingRequest)
 	mux.HandleFunc("/internal/members/sync", n.handleMembershipSync)
 	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
+	mux.HandleFunc("/internal/gc/mark", n.handleGCMark)
 	mux.HandleFunc("/admin/members", n.handleAdminMember)
 	mux.HandleFunc("/internal/drain", n.handleDrain)
 	mux.HandleFunc("/objects/", n.handleObject)
@@ -366,4 +367,23 @@ func (n *Node) handleObjectDelete(w http.ResponseWriter, r *http.Request, name s
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGCMark 返回本节点当前可见的 live chunk 集合。
+func (n *Node) handleGCMark(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	result, err := n.localGCMark()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		return
+	}
 }

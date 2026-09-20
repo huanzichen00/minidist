@@ -1,10 +1,15 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"minidist/internal/chunk"
 	"minidist/internal/object"
 	"minidist/internal/store"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -101,4 +106,93 @@ func TestMarkLiveChunksRejectsCorruptedMetadata(t *testing.T) {
 	if _, err := node.markLiveChunks(); err == nil {
 		t.Fatal("expected corrupted metadata error")
 	}
+}
+
+// TestHandleGCMark 验证内部 mark 接口返回本地的 live chunk 与配置版本。
+func TestHandleGCMark(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(7)
+
+	metadata, err := json.Marshal(object.Metadata{
+		Name:   "file.txt",
+		Chunks: []chunk.ChunkInfo{{ID: "chunk-a", Size: 10}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.store.Set(object.MetadataKeyPrefix+"file", store.Value{
+		Data: metadata, Version: store.Version{Counter: 1, NodeID: "test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/internal/gc/mark", nil)
+	response := httptest.NewRecorder()
+	node.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	var result gcMarkResponse
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ConfigVersion != 7 {
+		t.Fatalf("config version = %d, want 7", result.ConfigVersion)
+	}
+	if !reflect.DeepEqual(result.LiveChunks, []string{"chunk-a"}) {
+		t.Fatalf("live chunks = %v, want [chunk-a]", result.LiveChunks)
+	}
+}
+
+// TestCollectLiveChunks 验证本地与远端 mark 结果会合并为全局集合。
+func TestCollectLiveChunks(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(3)
+	node.store.ForceSet(object.MetadataKeyPrefix+"local", store.Value{
+		Data: mustMarshalMetadata(t, object.Metadata{
+			Name: "local.txt", Chunks: []chunk.ChunkInfo{{ID: "chunk-local", Size: 10}},
+		}),
+		Version: store.Version{Counter: 1, NodeID: "node-a"},
+	})
+
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/gc/mark" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(gcMarkResponse{
+			ConfigVersion: 3,
+			LiveChunks:    []string{"chunk-remote", "chunk-local"},
+		})
+	}))
+	defer remote.Close()
+
+	node.ring.Add(strings.TrimPrefix(remote.URL, "http://"))
+
+	live, version, err := node.collectLiveChunks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 3 {
+		t.Fatalf("version = %d, want 3", version)
+	}
+	if len(live) != 2 {
+		t.Fatalf("live chunk count = %d, want 2", len(live))
+	}
+	for _, id := range []string{"chunk-local", "chunk-remote"} {
+		if _, ok := live[id]; !ok {
+			t.Fatalf("%s was not collected", id)
+		}
+	}
+}
+
+// mustMarshalMetadata 将测试 metadata 编码为 JSON。
+func mustMarshalMetadata(t *testing.T, metadata object.Metadata) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
