@@ -186,6 +186,37 @@ func TestCollectLiveChunks(t *testing.T) {
 	}
 }
 
+// TestCollectLiveChunksRejectsConfigVersionMismatch 验证成员配置版本不一致时整轮 mark 失败。
+func TestCollectLiveChunksRejectsConfigVersionMismatch(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(3)
+
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(gcMarkResponse{
+			ConfigVersion: 4,
+			LiveChunks:    []string{"chunk-remote"},
+		})
+	}))
+	defer remote.Close()
+
+	node.ring.Add(strings.TrimPrefix(remote.URL, "http://"))
+
+	if _, _, err := node.collectLiveChunks(context.Background()); err == nil {
+		t.Fatal("expected config version mismatch error")
+	}
+}
+
+// TestCollectLiveChunksFailsWhenMemberUnavailable 验证任意成员不可达时不会返回部分 live 集合。
+func TestCollectLiveChunksFailsWhenMemberUnavailable(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(3)
+	node.ring.Add("127.0.0.1:1")
+
+	if _, _, err := node.collectLiveChunks(context.Background()); err == nil {
+		t.Fatal("expected unavailable member error")
+	}
+}
+
 // mustMarshalMetadata 将测试 metadata 编码为 JSON。
 func mustMarshalMetadata(t *testing.T, metadata object.Metadata) []byte {
 	t.Helper()
