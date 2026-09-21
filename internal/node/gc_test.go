@@ -1,8 +1,10 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"minidist/internal/chunk"
 	"minidist/internal/object"
 	"minidist/internal/store"
@@ -11,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMarkLiveChunks 验证只标记未删除对象引用的 chunk。
@@ -226,4 +229,96 @@ func mustMarshalMetadata(t *testing.T, metadata object.Metadata) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// TestLocalGCSweepRejectsConfigVersionMismatch 验证版本变化时不会执行回收。
+func TestLocalGCSweepRejectsConfigVersionMismatch(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(2)
+
+	_, err := node.localGCSweep(gcSweepRequest{
+		ConfigVersion: 1,
+		Cutoff:        time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected config version mismatch error")
+	}
+	if !errors.Is(err, errGCConfigVersionChanged) {
+		t.Fatalf("error = %v, want config version error", err)
+	}
+}
+
+// TestHandleGCSweepRejectsConfigVersionMismatch 验证版本冲突映射为 HTTP 409。
+func TestHandleGCSweepRejectsConfigVersionMismatch(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(2)
+
+	body, err := json.Marshal(gcSweepRequest{
+		ConfigVersion: 1,
+		Cutoff:        time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/gc/sweep", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+
+	node.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusConflict)
+	}
+}
+
+// TestRunGCDeletesOldOrphanAndKeepsLiveChunk 验证 GC 保留引用并删除过期孤儿 chunk。
+func TestRunGCDeletesOldOrphanAndKeepsLiveChunk(t *testing.T) {
+	node := newReplicationTestNode(t)
+	node.configVersion.Store(1)
+
+	liveData := []byte("live chunk")
+	liveID, err := node.chunks.Put(liveData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orphanID, err := node.chunks.Put([]byte("orphan chunk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadata := object.Metadata{
+		Name: "file.txt",
+		Chunks: []chunk.ChunkInfo{
+			{ID: liveID, Size: len(liveData)},
+		},
+	}
+
+	node.store.ForceSet(object.MetadataKeyPrefix+"file", store.Value{
+		Data:    mustMarshalMetadata(t, metadata),
+		Version: store.Version{Counter: 1, NodeID: "test"},
+	})
+
+	time.Sleep(20 * time.Millisecond)
+
+	result, err := node.RunGC(context.Background(), 10*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", result.Deleted)
+	}
+
+	if _, err := node.chunks.Get(liveID); err != nil {
+		t.Fatalf("live chunk missing: %v", err)
+	}
+
+	exists, err := node.chunks.Exists(orphanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("orphan chunk still exists")
+	}
 }

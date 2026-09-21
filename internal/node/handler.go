@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"errors"
 	"minidist/internal/chunk"
 	"minidist/internal/store"
 	"net/http"
@@ -23,11 +24,13 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/internal/ping-request", n.handlePingRequest)
 	mux.HandleFunc("/internal/members/sync", n.handleMembershipSync)
 	mux.HandleFunc("/internal/rebalance", n.handleRebalance)
-	mux.HandleFunc("/internal/gc/mark", n.handleGCMark)
 	mux.HandleFunc("/admin/members", n.handleAdminMember)
 	mux.HandleFunc("/internal/drain", n.handleDrain)
 	mux.HandleFunc("/objects/", n.handleObject)
 	mux.HandleFunc("/internal/chunks/", n.handleInternalChunk)
+	mux.HandleFunc("/internal/gc/mark", n.handleGCMark)
+	mux.HandleFunc("/internal/gc/sweep", n.handleGCSweep)
+	mux.HandleFunc("/admin/gc", n.handleAdminGC)
 
 	return mux
 }
@@ -379,6 +382,55 @@ func (n *Node) handleGCMark(w http.ResponseWriter, r *http.Request) {
 	result, err := n.localGCMark()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		return
+	}
+}
+
+// handleGCSweep 校验 sweep 请求并执行本地 chunk 回收。
+func (n *Node) handleGCSweep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req gcSweepRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	result, err := n.localGCSweep(req)
+	if err != nil {
+		if errors.Is(err, errGCConfigVersionChanged) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		return
+	}
+}
+
+// handleAdminGC 发起一次全局 chunk GC。
+func (n *Node) handleAdminGC(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	result, err := n.RunGC(r.Context(), defaultGCGracePeriod)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 

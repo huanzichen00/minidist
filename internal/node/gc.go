@@ -1,18 +1,41 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"minidist/internal/chunk"
 	"minidist/internal/object"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 type gcMarkResponse struct {
 	ConfigVersion uint64   `json:"config_version"`
 	LiveChunks    []string `json:"live_chunks"`
+}
+
+const defaultGCGracePeriod = 10 * time.Minute
+
+var errGCConfigVersionChanged = errors.New("gc config version changed")
+
+type gcSweepRequest struct {
+	ConfigVersion uint64    `json:"config_version"`
+	LiveChunks    []string  `json:"live_chunks"`
+	Cutoff        time.Time `json:"cutoff"`
+}
+
+type gcResult struct {
+	ConfigVersion uint64 `json:"config_version"`
+	LiveChunks    int    `json:"live_chunks"`
+	Nodes         int    `json:"nodes"`
+	Scanned       int    `json:"scanned"`
+	Deleted       int    `json:"deleted"`
+	Kept          int    `json:"kept"`
 }
 
 // markLiveChunks 扫描本节点当前可见的 object metadata，返回其中引用的所有 chunk ID。
@@ -127,4 +150,111 @@ func (n *Node) collectLiveChunks(ctx context.Context) (map[string]struct{}, uint
 	}
 
 	return live, expectedVersion, nil
+}
+
+// localGCSweep 在配置版本仍匹配时执行本地 chunk 回收。
+func (n *Node) localGCSweep(req gcSweepRequest) (chunk.SweepResult, error) {
+	if n.configVersion.Load() != req.ConfigVersion {
+		return chunk.SweepResult{}, fmt.Errorf("%w: expected=%d actual=%d", errGCConfigVersionChanged,
+			req.ConfigVersion,
+			n.configVersion.Load())
+	}
+
+	live := make(map[string]struct{}, len(req.LiveChunks))
+	for _, id := range req.LiveChunks {
+		live[id] = struct{}{}
+	}
+
+	return n.chunks.Sweep(live, req.Cutoff)
+}
+
+// requestGCSweep 请求指定节点执行本地 chunk sweep。
+func (n *Node) requestGCSweep(ctx context.Context, target string, req gcSweepRequest) (chunk.SweepResult, error) {
+	if target == n.addr {
+		return n.localGCSweep(req)
+	}
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return chunk.SweepResult{}, err
+	}
+
+	url := "http://" + target + "/internal/gc/sweep"
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return chunk.SweepResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := n.client.Do(httpReq)
+	if err != nil {
+		return chunk.SweepResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return chunk.SweepResult{}, fmt.Errorf("gc sweep on %s failed: %s", target, resp.Status)
+	}
+
+	var result chunk.SweepResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return chunk.SweepResult{}, err
+	}
+
+	return result, nil
+}
+
+// RunGC 收集集群引用并回收超过宽限期的孤儿 chunk。
+func (n *Node) RunGC(ctx context.Context, gracePeriod time.Duration) (gcResult, error) {
+	if gracePeriod < 0 {
+		return gcResult{}, fmt.Errorf("gc grace period cannot be negative")
+	}
+
+	gcStart := time.Now()
+
+	live, version, err := n.collectLiveChunks(ctx)
+	if err != nil {
+		return gcResult{}, err
+	}
+
+	members := n.ring.Members()
+	if len(members) == 0 {
+		return gcResult{}, fmt.Errorf("no cluster members")
+	}
+
+	if n.configVersion.Load() != version {
+		return gcResult{}, fmt.Errorf("cluster config changed before gc sweep")
+	}
+
+	liveChunks := make([]string, 0, len(live))
+	for id := range live {
+		liveChunks = append(liveChunks, id)
+	}
+	sort.Strings(liveChunks)
+
+	req := gcSweepRequest{
+		LiveChunks:    liveChunks,
+		ConfigVersion: version,
+		Cutoff:        gcStart.Add(-gracePeriod),
+	}
+
+	result := gcResult{
+		ConfigVersion: version,
+		LiveChunks:    len(liveChunks),
+		Nodes:         len(members),
+	}
+
+	for _, member := range members {
+		sweep, err := n.requestGCSweep(ctx, member, req)
+		if err != nil {
+			return gcResult{}, fmt.Errorf("sweep member %s: %w", member, err)
+		}
+
+		result.Scanned += sweep.Scanned
+		result.Deleted += sweep.Deleted
+		result.Kept += sweep.Kept
+	}
+
+	return result, nil
 }
