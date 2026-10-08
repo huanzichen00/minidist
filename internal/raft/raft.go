@@ -154,7 +154,7 @@ func (r *Raft) truncateFromLocked(index uint64) error {
 		return fmt.Errorf("cannot truncate dummy entry")
 	}
 
-	if index > uint64(len(r.log)) {
+	if index >= uint64(len(r.log)) {
 		return fmt.Errorf("truncate index out of range: %d", index)
 	}
 
@@ -182,6 +182,13 @@ func (r *Raft) advanceCommitLocked(index uint64) error {
 
 	r.commitIndex = index
 	return nil
+}
+
+func (r *Raft) advanceCommit(index uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.advanceCommitLocked(index)
 }
 
 // applyCommitted 将尚未 apply 的 committed 日志按顺序发送给状态机
