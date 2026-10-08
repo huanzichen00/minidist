@@ -117,10 +117,8 @@ func (r *Raft) becomeFollowerLocked(term uint64) {
 }
 
 // appendEntry 向本地日志尾部追加一条记录, 并返回新日志的 index
-func (r *Raft) appendEntry(term uint64, command []byte) uint64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+// 调用者必须持有 r.mu
+func (r *Raft) appendEntryLocked(term uint64, command []byte) uint64 {
 	entry := LogEntry{
 		Term:    term,
 		Command: append([]byte(nil), command...),
@@ -130,11 +128,17 @@ func (r *Raft) appendEntry(term uint64, command []byte) uint64 {
 	return uint64(len(r.log) - 1)
 }
 
-// termAt 返回指定日志 index 对应的 term
-func (r *Raft) termAt(index uint64) (uint64, bool) {
+// appendEntry 向本地日志尾部追加一条记录, 并返回新日志的 index
+func (r *Raft) appendEntry(term uint64, command []byte) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.appendEntryLocked(term, command)
+}
+
+// termAt 返回指定日志 index 对应的 term
+// 调用者必须持有 r.mu
+func (r *Raft) termAtLocked(index uint64) (uint64, bool) {
 	if index >= uint64(len(r.log)) {
 		return 0, false
 	}
@@ -143,13 +147,11 @@ func (r *Raft) termAt(index uint64) (uint64, bool) {
 }
 
 // truncateFrom 删除 index 及其之后的日志
-// Raft follower 收到冲突 AppendEntries 时会使用这个操作
-func (r *Raft) truncateFrom(index uint64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// 调用者必须持有 r.mu
+func (r *Raft) truncateFromLocked(index uint64) error {
 
 	if index == 0 {
-		return fmt.Errorf("cannot truncate empty entry")
+		return fmt.Errorf("cannot truncate dummy entry")
 	}
 
 	if index > uint64(len(r.log)) {
