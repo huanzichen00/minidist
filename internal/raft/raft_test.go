@@ -127,3 +127,138 @@ func TestApplyCommittedInOrderAndDoesNotRepeat(t *testing.T) {
 		t.Fatalf("second apply produced %d messages, want 0", got)
 	}
 }
+
+func TestRequestVoteRejectsStaleTerm(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	r.mu.Lock()
+	r.currentTerm = 3
+	r.mu.Unlock()
+
+	resp := r.RequestVote(RequestVoteRequest{
+		Term:        2,
+		CandidateID: "node-b",
+	})
+
+	if resp.VoteGranted {
+		t.Fatal("stale candidate received vote")
+	}
+
+	if resp.Term != 3 {
+		t.Fatalf("response term = %d, want 3", resp.Term)
+	}
+}
+
+func TestRequestVoteUpdatesHigherTerm(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	r.mu.Lock()
+	r.currentTerm = 2
+	r.role = Leader
+	r.votedFor = "node-a"
+	r.mu.Unlock()
+
+	resp := r.RequestVote(RequestVoteRequest{
+		Term:         3,
+		CandidateID:  "node-b",
+		LastLogIndex: 0,
+		LastLogTerm:  0,
+	})
+
+	if !resp.VoteGranted {
+		t.Fatal("vote not granted")
+	}
+
+	if r.CurrentTerm() != 3 {
+		t.Fatalf("current term = %d, want 3", r.CurrentTerm())
+	}
+
+	if r.Role() != Follower {
+		t.Fatalf("role = %v, want follower", r.Role())
+	}
+}
+
+func TestRequestVoteOnlyVotesOncePerTerm(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	first := r.RequestVote(RequestVoteRequest{
+		Term:         1,
+		CandidateID:  "node-b",
+		LastLogIndex: 0,
+		LastLogTerm:  0,
+	})
+
+	if !first.VoteGranted {
+		t.Fatal("first vote not granted")
+	}
+
+	second := r.RequestVote(RequestVoteRequest{
+		Term:         1,
+		CandidateID:  "node-c",
+		LastLogIndex: 0,
+		LastLogTerm:  0,
+	})
+
+	if second.VoteGranted {
+		t.Fatal("second candidate received vote in same term")
+	}
+}
+
+func TestRequestVoteAllowsRepeatedRequestFromSameCandidate(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	req := RequestVoteRequest{
+		Term:         1,
+		CandidateID:  "node-b",
+		LastLogIndex: 0,
+		LastLogTerm:  0,
+	}
+
+	if !r.RequestVote(req).VoteGranted {
+		t.Fatal("first vote not granted")
+	}
+
+	if !r.RequestVote(req).VoteGranted {
+		t.Fatal("repeated request from same candidate was rejected")
+	}
+}
+
+func TestRequestVoteRejectsCandidateWithOlderLog(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	r.appendEntry(1, []byte("a"))
+	r.appendEntry(2, []byte("b"))
+
+	resp := r.RequestVote(RequestVoteRequest{
+		Term:         3,
+		CandidateID:  "node-b",
+		LastLogIndex: 100,
+		LastLogTerm:  1,
+	})
+
+	if resp.VoteGranted {
+		t.Fatal("candidate with older log term received vote")
+	}
+
+	if r.CurrentTerm() != 3 {
+		t.Fatalf("current term = %d, want 3", r.CurrentTerm())
+	}
+}
+
+func TestRequestVotePrefersHigherLastLogTerm(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	r.appendEntry(1, []byte("a"))
+	r.appendEntry(2, []byte("b"))
+
+	resp := r.RequestVote(RequestVoteRequest{
+		Term:         3,
+		CandidateID:  "node-b",
+		LastLogIndex: 1,
+		LastLogTerm:  3,
+	})
+
+	if !resp.VoteGranted {
+		t.Fatal("candidate with newer last log term was rejected")
+	}
+}
