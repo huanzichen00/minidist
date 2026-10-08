@@ -1,6 +1,9 @@
 package raft
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // Role 表示 Raft 节点当前角色
 type Role uint8
@@ -97,9 +100,7 @@ func (r *Raft) LastApplied() uint64 {
 }
 
 // becomeFollower 将指定节点切换为指定 term 下的 Follower
-func (r *Raft) becomeFollower(term uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Raft) becomeFollowerLocked(term uint64) {
 
 	// term 小于现任期，视为无效返回
 	if term < r.currentTerm {
@@ -143,25 +144,71 @@ func (r *Raft) termAt(index uint64) (uint64, bool) {
 
 // truncateFrom 删除 index 及其之后的日志
 // Raft follower 收到冲突 AppendEntries 时会使用这个操作
-func (r *Raft) truncateFrom(index uint64) {
+func (r *Raft) truncateFrom(index uint64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if index == 0 {
+		return fmt.Errorf("cannot truncate empty entry")
+	}
+
+	if index > uint64(len(r.log)) {
+		return fmt.Errorf("truncate index out of range: %d", index)
+	}
+
+	if index <= r.commitIndex {
+		return fmt.Errorf("cannot truncate committed log: index=%d commit=%d", index, r.commitIndex)
+	}
 
 	r.log = r.log[:index]
+	return nil
 }
 
-// advanceCommit 将 commitIndex 推进到指定位置, 并返回需要 apply 的日志
-func (r *Raft) advanceCommit() []LogEntry {
+// advanceCommit 将 commitIndex 推进到指定位置
+func (r *Raft) advanceCommit(index uint64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	oldCommitIndex := r.commitIndex
-	r.commitIndex = uint64(len(r.log)) - 1
+	lastIndex := uint64(len(r.log) - 1)
 
-	if r.commitIndex == oldCommitIndex {
-		return []LogEntry{}
+	if index > lastIndex {
+		return fmt.Errorf("commit index out of range: %d > %d", index, lastIndex)
 	}
-	return r.log[oldCommitIndex+1:]
+
+	if index <= r.commitIndex {
+		return nil
+	}
+
+	r.commitIndex = index
+	return nil
 }
 
-// applyCommitted 将新提交的日志发送给上层状态机
+// applyCommitted 将尚未 apply 的 committed 日志按顺序发送给状态机
+// 当前假设只有一个 applier 调用该函数
+func (r *Raft) applyCommitted() {
+	for {
+		r.mu.Lock()
+
+		if r.lastApplied >= r.commitIndex {
+			r.mu.Unlock()
+			return
+		}
+
+		index := r.lastApplied + 1
+		entry := r.log[index]
+
+		msg := ApplyMsg{
+			Index:   index,
+			Term:    entry.Term,
+			Command: append([]byte(nil), entry.Command...),
+		}
+
+		r.mu.Unlock()
+
+		r.applyCh <- msg
+
+		r.mu.Lock()
+		r.lastApplied = index
+		r.mu.Unlock()
+	}
+}
