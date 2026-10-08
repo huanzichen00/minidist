@@ -101,10 +101,12 @@ func (r *Raft) becomeFollower(term uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// term 小于现任期，视为无效返回
 	if term < r.currentTerm {
 		return
 	}
 
+	// 更新任期
 	if term > r.currentTerm {
 		r.currentTerm = term
 		r.votedFor = ""
@@ -113,13 +115,53 @@ func (r *Raft) becomeFollower(term uint64) {
 	r.role = Follower
 }
 
-// appendEntry
+// appendEntry 向本地日志尾部追加一条记录, 并返回新日志的 index
+func (r *Raft) appendEntry(term uint64, command []byte) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry := LogEntry{
+		Term:    term,
+		Command: append([]byte(nil), command...),
+	}
+
+	r.log = append(r.log, entry)
+	return uint64(len(r.log) - 1)
+}
 
 // termAt 返回指定日志 index 对应的 term
+func (r *Raft) termAt(index uint64) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if index >= uint64(len(r.log)) {
+		return 0, false
+	}
+
+	return r.log[index].Term, true
+}
 
 // truncateFrom 删除 index 及其之后的日志
 // Raft follower 收到冲突 AppendEntries 时会使用这个操作
+func (r *Raft) truncateFrom(index uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.log = r.log[:index]
+}
 
 // advanceCommit 将 commitIndex 推进到指定位置, 并返回需要 apply 的日志
+func (r *Raft) advanceCommit() []LogEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	oldCommitIndex := r.commitIndex
+	r.commitIndex = uint64(len(r.log)) - 1
+
+	if r.commitIndex == oldCommitIndex {
+		return []LogEntry{}
+	}
+	return r.log[oldCommitIndex+1:]
+}
 
 // applyCommitted 将新提交的日志发送给上层状态机
