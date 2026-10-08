@@ -167,9 +167,8 @@ func (r *Raft) truncateFromLocked(index uint64) error {
 }
 
 // advanceCommit 将 commitIndex 推进到指定位置
-func (r *Raft) advanceCommit(index uint64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// 调用者必须持有 r.mu
+func (r *Raft) advanceCommitLocked(index uint64) error {
 
 	lastIndex := uint64(len(r.log) - 1)
 
@@ -213,4 +212,20 @@ func (r *Raft) applyCommitted() {
 		r.lastApplied = index
 		r.mu.Unlock()
 	}
+}
+
+// termAt 返回指定日志 index 对应的 term。
+func (r *Raft) termAt(index uint64) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.termAtLocked(index)
+}
+
+// truncateFrom 删除 index 及其之后的日志。
+func (r *Raft) truncateFrom(index uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.truncateFromLocked(index)
 }
