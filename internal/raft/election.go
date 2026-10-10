@@ -1,13 +1,12 @@
 package raft
 
-// 状态转换
+// becomeCandidateLocked 进入新的任期并切换为 Candidate
 func (r *Raft) becomeCandidateLocked() {
 	r.currentTerm++
 	r.role = Candidate
 	r.votedFor = r.id
 }
 
-// 搓 rpc 请求
 func (r *Raft) requestVoteRequestLocked() RequestVoteRequest {
 	lastIndex := uint64(len(r.log) - 1)
 	return RequestVoteRequest{

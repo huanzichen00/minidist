@@ -269,11 +269,11 @@ func TestStartElectionBecomesCandidateAndVotesForSelf(t *testing.T) {
 	req := r.startElection()
 
 	if r.Role() != Candidate {
-		t.Fatalf("role = %v, want candidate", r.role)
+		t.Fatalf("role = %v, want candidate", r.Role())
 	}
 
 	if r.currentTerm != 1 {
-		t.Fatalf("term = %d, want 1", r.currentTerm)
+		t.Fatalf("term = %d, want 1", r.CurrentTerm())
 	}
 
 	r.mu.Lock()
