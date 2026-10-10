@@ -262,3 +262,70 @@ func TestRequestVotePrefersHigherLastLogTerm(t *testing.T) {
 		t.Fatal("candidate with newer last log term was rejected")
 	}
 }
+
+func TestStartElectionBecomesCandidateAndVotesForSelf(t *testing.T) {
+	r := New("node-a", []string{"node-a", "node-b", "node-c"}, make(chan ApplyMsg, 8))
+
+	req := r.startElection()
+
+	if r.Role() != Candidate {
+		t.Fatalf("role = %v, want candidate", r.role)
+	}
+
+	if r.currentTerm != 1 {
+		t.Fatalf("term = %d, want 1", r.currentTerm)
+	}
+
+	r.mu.Lock()
+	votedFor := r.votedFor
+	r.mu.Unlock()
+
+	if votedFor != "node-a" {
+		t.Fatalf("votedFor = %q, want node-a", votedFor)
+	}
+
+	if req.Term != 1 {
+		t.Fatalf("request term = %d, want 1", req.Term)
+	}
+
+	if req.CandidateID != "node-a" {
+		t.Fatalf("candidate id = %q, want node-a", req.CandidateID)
+	}
+}
+
+func TestStartElectionIncrementsTermEachRound(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	first := r.startElection()
+	second := r.startElection()
+
+	if first.Term != 1 {
+		t.Fatalf("first election term = %d, want 1", first.Term)
+	}
+
+	if second.Term != 2 {
+		t.Fatalf("second election term = %d, want 2", second.Term)
+	}
+
+	if r.CurrentTerm() != 2 {
+		t.Fatalf("current term = %d, want 2", r.CurrentTerm())
+	}
+}
+
+func TestStartElectionIncludesLastLogInfo(t *testing.T) {
+	r := New("node-a", nil, make(chan ApplyMsg, 8))
+
+	r.appendEntry(1, []byte("a"))
+	r.appendEntry(2, []byte("b"))
+	r.appendEntry(2, []byte("c"))
+
+	req := r.startElection()
+
+	if req.LastLogIndex != 3 {
+		t.Fatalf("last log index = %d, want 3", req.LastLogIndex)
+	}
+
+	if req.LastLogTerm != 2 {
+		t.Fatalf("last log term = %d, want 2", req.LastLogTerm)
+	}
+}
