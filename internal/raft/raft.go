@@ -32,7 +32,9 @@ type ApplyMsg struct {
 type Raft struct {
 	mu sync.Mutex
 
-	id    string
+	id string
+	// 记录集群中其他 Raft 成员的地址
+	// 后续根据 clusterConfig 修改更新
 	peers []string
 
 	role        Role
@@ -120,7 +122,8 @@ func (r *Raft) becomeFollowerLocked(term uint64) {
 // 调用者必须持有 r.mu
 func (r *Raft) appendEntryLocked(term uint64, command []byte) uint64 {
 	entry := LogEntry{
-		Term:    term,
+		Term: term,
+		// 复制一份 command slice, 日志自己持有
 		Command: append([]byte(nil), command...),
 	}
 
@@ -128,7 +131,7 @@ func (r *Raft) appendEntryLocked(term uint64, command []byte) uint64 {
 	return uint64(len(r.log) - 1)
 }
 
-// appendEntry 向本地日志尾部追加一条记录, 并返回新日志的 index
+// appendEntry 向 **本地日志** 尾部追加一条记录, 并返回新日志的 index
 func (r *Raft) appendEntry(term uint64, command []byte) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()

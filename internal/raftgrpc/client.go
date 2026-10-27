@@ -21,6 +21,19 @@ func NewClient(conn *grpc.ClientConn) *Client {
 }
 
 // RequestVote 向远端节点请求投票
-func (c *Client) RequestVote(ctx context.Context, req raft.RequestVoteRequest) raft.RequestVoteResponse {
+func (c *Client) RequestVote(ctx context.Context, req raft.RequestVoteRequest) (raft.RequestVoteResponse, error) {
+	resp, err := c.rpc.RequestVote(ctx, &raftv1.RequestVoteRequest{
+		Term:         req.Term,
+		CandidateId:  req.CandidateID,
+		LastLogIndex: req.LastLogIndex,
+		LastLogTerm:  req.LastLogTerm,
+	})
+	if err != nil {
+		return raft.RequestVoteResponse{}, err
+	}
 
+	return raft.RequestVoteResponse{
+		Term:        resp.GetTerm(),
+		VoteGranted: resp.GetVoteGranted(),
+	}, nil
 }
